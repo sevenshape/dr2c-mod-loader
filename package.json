@@ -1,0 +1,21 @@
+{
+  "name": "dr2c-mod-loader",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "frida-compile index.js -o dist/index.js -c",
+    "dev": "frida-compile index.js -o dist/index.js -c && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe -s ./dist/index.js"
+  },
+  "devDependencies": {
+    "@types/frida-gum": "^19.1.0",
+    "frida-compile": "^19.0.5"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}
