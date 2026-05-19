@@ -5,3 +5,4 @@
 !jsconfig.json
 !package.json
 !package-lock.json
+!pack.js

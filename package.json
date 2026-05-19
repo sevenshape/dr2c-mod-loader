@@ -8,7 +8,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "frida-compile index.js -o dist/index.js",
+    "build": "frida-compile index.js -o dist/index.js && node pack.js",
     "dev": "frida-compile index.js -o dist/index.js && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe -s ./dist/index.js",
     "which": "which frida-compile && frida-compile --version"
   },
@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "frida-fs": "^7.0.0",
-    "jszip": "^3.10.1",
-    "pacote": "^21.5.0"
+    "jszip": "^3.10.1"
   }
 }

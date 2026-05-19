@@ -6,7 +6,6 @@ const fs = require('frida-fs');
  * @returns {void}
  */
 function log(...args) {
-    // @ts-ignore
     console.log('[+]', ...args);
 }
 
@@ -15,7 +14,6 @@ function log(...args) {
  * @returns {void}
  */
 function error(...args) {
-    // @ts-ignore
     console.error('[-]', ...args);
 }
 
@@ -24,7 +22,6 @@ function error(...args) {
  * @returns {void}
  */
 function info(...args) {
-    // @ts-ignore
     console.info('[*]', ...args);
 }
 
@@ -33,9 +30,12 @@ function info(...args) {
  * @returns {void}
  */
 function warn(...args) {
-    // @ts-ignore
     console.warn('[!]', ...args);
 }
+
+/** @type {string} */
+// @ts-ignore
+globalThis.modsDir = globalThis.modsDir ?? '';
 
 function main() {
 
@@ -66,7 +66,40 @@ function main() {
         function (mod) {
             info('prog.exe loaded @ ' + mod.base + ' size=' + mod.size);
 
-            hook();
+            if (!globalThis.modsDir) {
+                globalThis.modsDir = Process.mainModule.path.substring(0, Process.mainModule.path.lastIndexOf('\\')) + '/mods';
+                info(Process.mainModule.path, globalThis.modsDir)
+                try {
+                    const stats = fs.lstatSync(globalThis.modsDir);
+                } catch (e) {
+                    mkdir(globalThis.modsDir);
+                }
+
+                /** @type {string[]} */
+                let modScript = []
+
+                fs.readdirSync(globalThis.modsDir).forEach(ele => {
+                    const fullPath = `${globalThis.modsDir}/${ele}`;
+                    const stats = fs.lstatSync(fullPath);
+
+                    if (ele.endsWith('.js') && stats.isFile()) {
+                        modScript.push(File.readAllText(fullPath));
+                    }
+                });
+
+                /** @param {string} libName  @returns {Object} */
+                function require(libName) {
+                    if (libName === 'jszip') return JSZip;
+                    if (libName === 'frida-fs') return fs;
+                    return NULL;
+                }
+
+                for (const script of modScript) {
+                    new Function('require', script)(require);
+                }
+            } else {
+                hook();
+            }
         });
 }
 
@@ -138,6 +171,9 @@ function hook() {
     const file_read = new NativeFunction(findSymbol('file_read'), 'pointer', ['pointer', 'pointer', 'size_t']);
     const file_length = new NativeFunction(findSymbol('file_length'), 'size_t', ['pointer']);
 
+    const layout_for_news = findSymbol('layout_for_news').add(0x240);
+
+
     const strlen = new NativeFunction(resolveExport('strlen'), 'size_t', ['pointer']);
 
     if (Process.platform === 'linux') {
@@ -145,9 +181,9 @@ function hook() {
         Interceptor.attach(button_ex, {
             onEnter(args) {
                 if (args[3].isNull()) return;
-                if ((args[3].readCString() ?? "").indexOf('  START  ') !== -1) {
-                    const a1 = new Float32Array(new Int32Array([args[0].toInt32()]).buffer)[0];
-                    const a2 = new Float32Array(new Int32Array([args[1].toInt32()]).buffer)[0];
+                const a1 = new Float32Array(new Int32Array([args[0].toInt32()]).buffer)[0];
+                const a2 = new Float32Array(new Int32Array([args[1].toInt32()]).buffer)[0];
+                if ((a1 || a2) && (this.returnAddress > layout_for_news && this.returnAddress < layout_for_news.add(0xFF))) {
 
                     const btn = button_ex(a1, a2 - 1, 0, L("Mods"), findSymbol('main_btn_data_func'));
                     btn.add(4 * 58).writePointer(modCallback);
@@ -163,34 +199,12 @@ function hook() {
      * @property {string} description
      */
 
-    /**
-     * @typedef {Object} Mods
-     * @property {Mod[]} mods
-     */
-
-
-    /**
-     * @typedef {Object} ModsConfig
-     * @property {string[]} mods
-     */
-
     let mods_init = false;
 
 
-    /** @type {Object<string, Mod>} */
-    let mods = {
-        "dr2c-mod-loader": {
-            "name": "dr2c-mod-loader",
-            "version": "0.1.0",
-            "description": "Load mod to DR2C"
-        }
-    };
-    /** @type {ModsConfig} */
-    let mods_config = {
-        "mods": [
-            "dr2c-mod-loader",
-        ]
-    };
+    /** @type {Mod[]} */
+    let mods = [
+    ];
 
 
     const modCallback = new NativeCallback(
@@ -221,7 +235,7 @@ function hook() {
             if (!mods_init) {
                 mods_init = true;
 
-                const dirPath = WRAPPER_FILE_SAVE_PATH().readCString() + 'mods'
+                const dirPath = globalThis.modsDir
 
                 fs.readdirSync(dirPath).forEach(ele => {
                     const fullPath = `${dirPath}/${ele}`;
@@ -231,37 +245,8 @@ function hook() {
                         const mstr = File.readAllText(fullPath);
                         /** @type {Mod} */
                         const mjson = JSON.parse(mstr);
-                        mods[mjson.name] = mjson;
+                        mods.push(mjson);
                     }
-                });
-
-                const mc_p = loadSaveFile('mods_config.json');
-                if (!mc_p.isNull()) {
-                    const mc_js = mc_p.readUtf8String() ?? '{}';
-
-                    /** @type {ModsConfig} */
-                    const mc_jo = JSON.parse(mc_js);
-
-                    const mods_config_v = {
-                        ...mods_config,
-                        ...mc_jo
-                    }
-
-                    log('mods_config', JSON.stringify(mc_js), JSON.stringify(mods_config), JSON.stringify(mods_config_v));
-                    mods_config = mods_config_v;
-                }
-                mods_config.mods.forEach((element, i, array) => {
-                    const p1 = loadSaveFile('mods/' + element + '.json');
-                    if (!p1.isNull()) {
-                        const s1 = p1.readUtf8String() ?? '{}';
-                        log(element, s1);
-                        /** @type {Mod} */
-                        const o1 = JSON.parse(s1);
-                        mods[element] = {
-                            ...o1
-                        };
-                    }
-
                 });
             }
 
@@ -295,43 +280,56 @@ function hook() {
             main_tabscreen_blank_tab_layout();
             button_set_layout(2.0, 3.0);
             main_tabscreen_tabbox_shrink();
-            mods_config.mods.slice(0 + modPage * 6, 6 + modPage * 6).forEach((element, i, array) => {
-                const btn = button_ex((i % 6 % 2), Math.floor(i / 2), modPage + i, L(mods[element].name), main_btn_data_func);
-                btn.add(4 * 58).writePointer(callback('desc_' + element,
+            mods.slice(0 + modPage * 6, 6 + modPage * 6).forEach((mod, i, array) => {
+                const btn = button_ex((i % 6 % 2), Math.floor(i / 2), modPage + i, L(mod.name), main_btn_data_func);
+                btn.add(4 * 58).writePointer(callback('desc_' + mod.name,
                     () => {
-                        log('desc_' + element);
-                        cyoa_just_ok(L(mods[element].description));
-                        cyoa_set_choice_func(callback('desc_ok_' + element,
+                        log('desc_' + mod.name);
+                        cyoa_just_ok(L(mod.description));
+                        cyoa_set_choice_func(callback('desc_ok_' + mod.name,
                             () => {
-                                const s = Memory.allocUtf8String(JSON.stringify(mods_config, null, 2));
-                                log('mods_config.json', s.readUtf8String(), strlen(s));
-                                writeSaveFile('mods_config.json', s, strlen(s));
-                                log('desc_ok_' + element);
+                                log('desc_ok_' + mod.name);
                                 return 1;
                             }
                         ));
                         cyoa_add_choice();
-                        cyoa_set_choice_func(callback('desc_update_' + element,
+                        cyoa_set_choice_func(callback('desc_update_' + mod.name,
                             () => {
-                                log('desc_update_' + element);
+                                log('desc_update_' + mod.name);
                                 return 1;
                             }
                         ));
                         cyoa_set_choice_text(L("Check for Updates"));
                         cyoa_add_choice();
-                        cyoa_set_choice_func(callback('desc_delete_' + element,
+                        cyoa_set_choice_func(callback('desc_delete_' + mod.name,
                             () => {
-                                log('desc_delete_' + element);
-                                mods_config.mods.splice(i, 1);
-                                const s = Memory.allocUtf8String(JSON.stringify(mods_config, null, 2));
-                                log('mods_config.json', s.readUtf8String(), strlen(s));
-                                writeSaveFile('mods_config.json', s, strlen(s));
+                                log('desc_delete_' + mod.name);
+                                mods.splice(i, 1);
+
+                                const dirPath = globalThis.modsDir
+                                fs.readdirSync(dirPath).forEach(ele => {
+                                    const fullPath = `${dirPath}/${ele}`;
+                                    const stats = fs.lstatSync(fullPath);
+
+                                    if (ele === `${mod.name}.config` && stats.isFile()) {
+                                        rmrfSync(fullPath);
+                                    }
+
+                                    if (ele === `${mod.name}.js` && stats.isFile()) {
+                                        rmrfSync(fullPath);
+                                    }
+
+                                    if (ele === `${mod.name}` && stats.isDirectory()) {
+                                        rmrfSync(fullPath);
+                                    }
+                                });
+
                                 new NativeFunction(modLayout, 'int', [])();
                                 return 1;
                             }
                         ));
                         cyoa_set_choice_text(L("DELETE"));
-                        cyoa_set_title(L(mods[element].name));
+                        cyoa_set_title(L(mod.name));
                         return 1;
                     }
                 ));
@@ -344,7 +342,7 @@ function hook() {
                 () => {
                     modPage--;
                     if (modPage < 0) {
-                        modPage = Math.floor(mods_config.mods.length / 6);
+                        modPage = Math.floor(mods.length / 6);
                     }
                     log('btn_L', modPage);
                     new NativeFunction(modLayout, 'int', [])();
@@ -356,7 +354,7 @@ function hook() {
                 () => {
 
                     modPage++;
-                    if (modPage > mods_config.mods.length / 6) modPage = 0;
+                    if (modPage > mods.length / 6) modPage = 0;
                     log('btn_R', modPage)
                     new NativeFunction(modLayout, 'int', [])();
                     return 1;
@@ -367,104 +365,75 @@ function hook() {
             btn_load.add(4 * 58).writePointer(callback('',
                 () => {
                     const path1 = selzip();
-                    log(path1);
-                    if (path1) {
-                        const data1 = File.readAllBytes(path1);
+                    log('选择', path1);
+                    if (!path1) throw new Error("not select file");
+
+                    const data1 = File.readAllBytes(path1);
+
+                    JSZip.loadAsync(data1).then(zip => {
+                        const fmod = zip.filter((path, file) => { return path.endsWith('.config') });
+                        if (fmod.length === 0) throw new Error(".config not find");
+
+                        fmod[0].async('string').then(async content => {
+                            log('config内容:', content);
+
+                            /** @type {Mod} */
+                            const mod = JSON.parse(content);
+                            if (!mod["name"]) throw new Error('mod.json缺少name');
+
+                            const mpath = globalThis.modsDir;
+
+                            mods = mods.filter(item => item.name !== mod.name);
+
+                            fs.readdirSync(mpath).forEach(ele => {
+                                const fullPath = `${mpath}/${ele}`;
+                                const stats = fs.lstatSync(fullPath);
+
+                                if (ele === mod.name + '.config' && stats.isFile()) {
+                                    rmrfSync(`${mpath}/${mod.name}.config`);
+                                }
+                                if (ele === mod.name + '.js' && stats.isFile()) {
+                                    rmrfSync(`${mpath}/${mod.name}.js`);
+                                }
+                                if (ele === mod.name && stats.isDirectory()) {
+                                    rmrfSync(`${mpath}/${mod.name}`);
+                                }
+                            });
 
 
-
-                        /** @param {string} path @returns {number} */
-                        function mkdir(path) {
-                            const createDirectoryW = findExportByName('kernel32.dll', 'CreateDirectoryW');
-                            const CreateDirectoryW = new NativeFunction(createDirectoryW, 'int', ['pointer', 'pointer']);
-                            const pathPtr = Memory.allocUtf16String(path);
-
-                            const result = CreateDirectoryW(pathPtr, NULL);
-                            return result;
-                        }
-                        /** @param {string} target */
-                        function rmrfSync(target) {
-                            let st;
-                            try {
-                                st = fs.lstatSync(target);     // 注意是 lstat,不是 stat
-                            } catch (e) {
-                                if (e.code === 'ENOENT') return;   // 不存在就当成功
-                                throw e;
-                            }
-
-                            // 符号链接(即使指向目录)也按文件删,绝对不能递归进去
-                            if (!st.isDirectory() || st.isSymbolicLink()) {
-                                fs.unlinkSync(target);
-                                return;
-                            }
-
-                            // 是真目录:先把里面清空
-                            for (const entry of fs.readdirSync(target)) {
-                                if (entry === '.' || entry === '..') continue;  // frida-fs 不会自动过滤
-                                rmrfSync(target + '/' + entry);
-                            }
-
-                            // 再删空目录本身
-                            fs.rmdirSync(target);
-                        }
-
-                        JSZip.loadAsync(data1).then(zip => {
-                            const fmod = zip.file("mod.json");
-                            if (fmod) {
-                                fmod.async('string').then(content => {
-                                    log('mod.json 内容:', content);
-
-                                    try {
-                                        /** @type {Mod} */
-                                        const mod = JSON.parse(content);
-                                        if (!mod["name"]) throw new Error('mod.json缺少name');
-
-
-                                        const mpath = `${WRAPPER_FILE_SAVE_PATH().readCString()}mods/${mod.name}`;
-
-                                        rmrfSync(mpath);
-
-                                        if (!mkdir(mpath)) throw new Error('mkdir fail ' + mpath);
-
-                                        zip.forEach((path, entry) => {
-                                            log(path, entry.dir);
-
-                                            const opath = `${mpath}/${path}`;
-
-                                            if (entry.dir) {
-                                                mkdir(opath);          // 见下方辅助函数
-                                                return;
-                                            }
-
-                                            entry.async('array').then(content => {
-                                                log('unzip start', path, opath)
-                                                File.writeAllBytes(opath, content);
-                                                log('unzip succed', path, content.length, 'bytes');
-                                            });
-                                        });
-
-                                        mods_config.mods.push(mod.name);
-                                        mods[mod.name] = mod;
-
-                                        cyoa_just_ok(L('Load mod success.'));
-                                        cyoa_set_title(L('SUCCESS'));
-
-                                        new NativeFunction(modLayout, 'int', [])();
-
-                                    } catch (e) {
-                                        error('JSON 解析失败:', e instanceof Error ? e.stack : e);
+                            File.writeAllText(`${mpath}/${mod.name}.config`, content);
+                            const jsfile = zip.file(mod.name + '.js');
+                            if (jsfile)
+                                File.writeAllText(`${mpath}/${mod.name}.js`, await jsfile.async('text'));
+                            for (const path of Object.keys(zip.files)) {
+                                const entry = zip.files[path];
+                                if (path.startsWith('dr2c-mod-loader/')) {
+                                    if (entry.dir) {
+                                        mkdir(mpath + '/' + path.slice(0, -1));
+                                        log('📁 目录:', mpath + '/' + path.slice(0, -1));
+                                    } else {
+                                        const data = await entry.async('array');
+                                        File.writeAllBytes(mpath + '/' + path, data);
+                                        log('📄 文件:', mpath + '/' + path);
                                     }
-                                });
+                                }
                             }
 
+                            mods.push(mod);
 
+                            cyoa_just_ok(L('Load mod success.'));
+                            cyoa_set_title(L('SUCCESS'));
+
+                            new NativeFunction(modLayout, 'int', [])();
                         });
-
+                    }).catch(e => {
+                        error(e);
                         cyoa_just_ok(L('Invalid mod detected.'));
                         cyoa_set_title(L('LOAD MOD FAIL'));
 
                         new NativeFunction(modLayout, 'int', [])();
-                    }
+                    });
+
                     return 1;
                 }
             ));
@@ -804,7 +773,6 @@ function selzip() {
         }
 
         const selected = fileBuffer.readUtf16String();
-        log('已选择:', selected);
         return selected;
     }
     return showOpenFileDialog({ title: '', filters: [['zip', '*.zip']] });
@@ -825,6 +793,42 @@ function findExportByName(mod, fun) {
     if (!result) throw new Error(`fun ${mod + ':' + fun} not find`);
 
     return result
+}
+
+/** @param {string} path*/
+function mkdir(path) {
+    const createDirectoryW = findExportByName('kernel32.dll', 'CreateDirectoryW');
+    const CreateDirectoryW = new NativeFunction(createDirectoryW, 'int', ['pointer', 'pointer']);
+    const pathPtr = Memory.allocUtf16String(path);
+
+    const result = CreateDirectoryW(pathPtr, NULL);
+    if (result === 0) throw new Error("CreateDirectoryW fail " + path);
+}
+/** @param {string} target */
+function rmrfSync(target) {
+    let st;
+    try {
+        st = fs.lstatSync(target);     // 注意是 lstat,不是 stat
+    } catch (e) {
+        // @ts-ignore
+        if (e.code === 'ENOENT') return;   // 不存在就当成功
+        throw e;
+    }
+
+    // 符号链接(即使指向目录)也按文件删,绝对不能递归进去
+    if (!st.isDirectory() || st.isSymbolicLink()) {
+        fs.unlinkSync(target);
+        return;
+    }
+
+    // 是真目录:先把里面清空
+    for (const entry of fs.readdirSync(target)) {
+        if (entry === '.' || entry === '..') continue;  // frida-fs 不会自动过滤
+        rmrfSync(target + '/' + entry);
+    }
+
+    // 再删空目录本身
+    fs.rmdirSync(target);
 }
 
 
