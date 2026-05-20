@@ -7,7 +7,7 @@ const OUT_FILE = path.resolve(__dirname, 'dist/' + pkg.name + '-' + pkg.version 
 
 (async () => {
     const zip = new JSZip();
-    zip.file(pkg.name + '.js', fs.readFileSync(path.resolve(__dirname, 'dist', 'index.js')));
+    zip.file(pkg.name + '.js', fs.readFileSync(path.resolve(__dirname, 'index.js')));
     zip.file(pkg.name + '.config', fs.readFileSync(path.resolve(__dirname, 'package.json')));
     const buf = await zip.generateAsync({
         type: 'nodebuffer',

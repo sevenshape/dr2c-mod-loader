@@ -37,7 +37,24 @@ function warn(...args) {
 // @ts-ignore
 globalThis.modsDir = globalThis.modsDir ?? '';
 
+
+
 function main() {
+
+    Module.load('urlmon.dll');
+    const URLDownloadToFileW = new NativeFunction(
+        findExportByName('urlmon.dll', 'URLDownloadToFileW'),
+        'uint32', ['pointer', 'pointer', 'pointer', 'uint32', 'pointer']
+    );
+
+    const hr = URLDownloadToFileW(
+        NULL,
+        Memory.allocUtf16String('https://example.com/'),
+        Memory.allocUtf16String('C:\\temp\\out.html'),
+        0,
+        NULL
+    );
+    console.log('hr =', hr);
 
     waitForModule('libmain.so',
         /**
@@ -203,8 +220,7 @@ function hook() {
 
 
     /** @type {Mod[]} */
-    let mods = [
-    ];
+    let mods = [];
 
 
     const modCallback = new NativeCallback(
@@ -281,7 +297,7 @@ function hook() {
             button_set_layout(2.0, 3.0);
             main_tabscreen_tabbox_shrink();
             mods.slice(0 + modPage * 6, 6 + modPage * 6).forEach((mod, i, array) => {
-                const btn = button_ex((i % 6 % 2), Math.floor(i / 2), modPage + i, L(mod.name), main_btn_data_func);
+                const btn = button_ex((i % 6 % 2), Math.floor(i / 2), modPage + i, L(mod.name + '-' + mod.version), main_btn_data_func);
                 btn.add(4 * 58).writePointer(callback('desc_' + mod.name,
                     () => {
                         log('desc_' + mod.name);
@@ -329,7 +345,7 @@ function hook() {
                             }
                         ));
                         cyoa_set_choice_text(L("DELETE"));
-                        cyoa_set_title(L(mod.name));
+                        cyoa_set_title(L(mod.name + '-' + mod.version));
                         return 1;
                     }
                 ));
@@ -442,32 +458,6 @@ function hook() {
         'uint',  // 返回值: LRESULT
         []
     );
-
-    /** @type {Object<string, NativePointer>} */
-    const saveFileList = {}
-
-    /** @param {string} str  @returns {NativePointer} */
-    function loadSaveFile(str) {
-        let mf = file_open_save_read(L(str));
-        if (mf.isNull()) {
-            return NULL;
-        } else {
-            const fsize = file_length(mf);
-            saveFileList[str] = Memory.alloc(fsize.add(1));
-            saveFileList[str].add(fsize.add(1)).writeU8(0);
-            file_read(mf, saveFileList[str], fsize);
-            file_close(mf);
-            return saveFileList[str];
-        }
-    }
-
-
-    /** @param {string} str @param {NativePointer} ptr @param {UInt64} size  */
-    function writeSaveFile(str, ptr, size) {
-        let mf = file_open_save_write(L(str));
-        file_write(mf, ptr, size);
-        file_close(mf);
-    }
 }
 
 /** @type {Object<string, NativePointer>} */

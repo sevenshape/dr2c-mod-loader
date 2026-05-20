@@ -1,8 +1,10 @@
 *
 !.gitignore
-!run.py
 !index.js
 !jsconfig.json
 !package.json
 !package-lock.json
 !pack.js
+
+!run.py
+!start_frida_hook.py

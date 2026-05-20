@@ -7,9 +7,7 @@ frida-dr2c / run_win.py
 """
 
 import argparse
-import json
 import os
-import shutil
 import sys
 import struct
 import threading

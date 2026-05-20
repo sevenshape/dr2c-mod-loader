@@ -8,9 +8,10 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "frida-compile index.js -o dist/index.js && node pack.js",
-    "dev": "frida-compile index.js -o dist/index.js && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe -s ./dist/index.js",
-    "which": "which frida-compile && frida-compile --version"
+    "build": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && node pack.js",
+    "dev": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe -s ./dist/index.js",
+    "install": "pip install frida && pip install frida-tools",
+    "which": "which frida-compile && frida-compile --version && which frida && frida --version"
   },
   "devDependencies": {
     "@types/frida-gum": "^19.1.0"
