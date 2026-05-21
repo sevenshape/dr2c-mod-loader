@@ -5,10 +5,48 @@ const pkg = require('./package.json');
 
 const OUT_FILE = path.resolve(__dirname, 'dist/' + pkg.name + '-' + pkg.version + '.zip');
 
+/** @param {string} dirPath @returns {string[]} */
+function getAllFiles(dirPath) {
+    const result = [];
+    const items = fs.readdirSync(dirPath);
+
+    for (const item of items) {
+        const fullPath = path.join(dirPath, item);
+        const stat = fs.statSync(fullPath);
+
+        if (stat.isDirectory()) {
+            result.push(...getAllFiles(fullPath));  // 递归
+        } else {
+            result.push(fullPath);
+        }
+    }
+
+    return result;
+}
+
 (async () => {
     const zip = new JSZip();
-    zip.file(pkg.name + '.js', fs.readFileSync(path.resolve(__dirname, 'index.js')));
-    zip.file(pkg.name + '.config', fs.readFileSync(path.resolve(__dirname, 'package.json')));
+    zip.file('index.js', fs.readFileSync(path.resolve(__dirname, 'index.js')));
+    zip.file('package.json', fs.readFileSync(path.resolve(__dirname, 'package.json')));
+    zip.file('main.js', fs.readFileSync(path.resolve(__dirname, 'dist', 'index.js')));
+
+    getAllFiles(path.resolve(__dirname, 'assets')).forEach(item => {
+
+        const stat = fs.statSync(item);
+        let zipPath = path.relative(path.resolve(__dirname), item);
+        if (process.platform === 'win32') {
+            zipPath = zipPath.replaceAll('\\', '/');
+        }
+
+        if (stat.isFile()) {
+            zip.file(zipPath, fs.readFileSync(item));
+        }
+        if (stat.isDirectory()) {
+            zip.folder(zipPath + '/');
+        }
+        console.log(item, 'to zip:', zipPath);
+    });
+
     const buf = await zip.generateAsync({
         type: 'nodebuffer',
         compression: 'DEFLATE',

@@ -9,15 +9,17 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && node pack.js",
-    "dev": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe -s ./dist/index.js",
+    "dev": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe",
     "install": "pip install frida && pip install frida-tools",
-    "which": "which frida-compile && frida-compile --version && which frida && frida --version"
+    "which": "which frida-compile && frida-compile --version && which frida && frida --version",
+    "android_dev": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && python start_frida_hook.py com.noodlecake.drtc"
   },
   "devDependencies": {
     "@types/frida-gum": "^19.1.0"
   },
   "dependencies": {
     "frida-fs": "^7.0.0",
+    "frida-java-bridge": "^7.0.13",
     "jszip": "^3.10.1"
   }
 }

@@ -323,9 +323,9 @@ def spawn_and_inject(package, script_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="启动 frida-server 并可选 spawn + 注入 agent.js")
+    parser = argparse.ArgumentParser(description="启动 frida-server 并可选 spawn + 注入 ./dist/index.js")
     parser.add_argument("package", nargs="?", help="要 spawn 的应用包名(可选)")
-    parser.add_argument("-s", "--script", default="agent.js", help="注入脚本路径(默认: ./agent.js)")
+    parser.add_argument("-s", "--script", default="dist/index.js", help="注入脚本路径(默认: ./dist/index.js)")
     args = parser.parse_args()
 
     print("=" * 50)

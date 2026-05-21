@@ -222,7 +222,7 @@ def main():
     
     parser = argparse.ArgumentParser(description="启动 frida-server 并可选 spawn + 注入 index.js")
     parser.add_argument("-t", "--target", default=r"D:\dr2c\2024\prog.exe", help="注入的对象exe")
-    parser.add_argument("-s", "--script", default="index.js", help="注入脚本路径(默认: ./index.js)")
+    parser.add_argument("-s", "--script", default="./dist/index.js", help="注入脚本路径(默认: ./dist/index.js)")
     args = parser.parse_args()
 
     with open(args.script, "r", encoding="utf-8") as f:
