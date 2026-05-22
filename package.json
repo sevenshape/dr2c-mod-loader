@@ -1,21 +1,25 @@
 {
   "name": "dr2c-mod-loader",
-  "version": "1.0.0",
-  "description": "",
+  "version": "0.0.1",
+  "description": "Load mod to dr2c.",
   "license": "ISC",
   "author": "",
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && node pack.js",
-    "dev": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe",
-    "install": "pip install frida && pip install frida-tools",
+    "postinstall": "pip install frida && pip install frida-tools",
     "which": "which frida-compile && frida-compile --version && which frida && frida --version",
-    "android_dev": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js && python start_frida_hook.py com.noodlecake.drtc"
+    "build": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js",
+    "build:package": "npm run build && node pack.js",
+    "dev": "npm run build && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe",
+    "dev:package": "npm run build:package && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe",
+    "dev:android": "npm run build && python start_frida_hook.py com.noodlecake.drtc",
+    "dev:android:package": "npm run build:package && cross-var adb push ./dist/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && python start_frida_hook.py com.noodlecake.drtc"
   },
   "devDependencies": {
-    "@types/frida-gum": "^19.1.0"
+    "@types/frida-gum": "^19.1.0",
+    "cross-var": "^1.1.0"
   },
   "dependencies": {
     "frida-fs": "^7.0.0",
