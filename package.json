@@ -13,6 +13,7 @@
     "build": "node -e \"require('fs').mkdirSync('./dist',{recursive:true})\" && frida-compile index.js -o dist/index.js",
     "build:package": "npm run build && node pack.js",
     "dev": "npm run build && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe",
+    "dev:2022": "npm run build && python run.py -t D:\\dr2c\\2022\\prog.exe",
     "dev:package": "npm run build:package && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe",
     "dev:android": "npm run build && python start_frida_hook.py com.noodlecake.drtc",
     "dev:android:package": "npm run build:package && cross-var adb push ./dist/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && python start_frida_hook.py com.noodlecake.drtc"

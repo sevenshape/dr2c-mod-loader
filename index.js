@@ -44,17 +44,18 @@ function warn(...args) {
 
 /** @type {string} */
 // @ts-ignore
-globalThis.modsDir = globalThis.modsDir;
+globalThis.modsDir;
 
 /** @type {Module} */
 // @ts-ignore
-globalThis.mainModule = globalThis.mainModule;
+globalThis.mainModule;
 
-function getPackageName() {
-    var match = mainModule.path.match(/([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)+)/);
-    if (!match) throw new Error("Failed to match package name");
-    return match[1];
-}
+/** @type {*} */
+// @ts-ignore
+globalThis.application;
+/** @type {*} */
+// @ts-ignore
+globalThis.applicationContext;
 
 // @ts-ignore
 if (typeof mod === 'undefined') {
@@ -113,18 +114,59 @@ function loadMods(modsDir) {
 }
 
 /** @type {{ [key: string]: NativePointer }} */
-const LANG_STR = Object.fromEntries(
+var LANG_STR = Object.fromEntries(
     Object.entries({}).map(([k, v]) => [k, allocMixedString(v)])
 )
-Java.perform(function () {
-    var Locale = Java.use('java.util.Locale');
-    var language = Locale.getDefault().getLanguage();
-
-    // ISO 639-1 是严格的2字母代码，直接用 === 判断
-    if (language === 'zh') {
-        // isChinese = true;
+/** @param {string} iso639_1  */
+function loadLangEx(iso639_1) {
+    try {
+        const langsDir = fs.readdirSync(mod.dir + '/assets/locale');
+        for (const langDir of langsDir) {
+            if (langDir === iso639_1) {
+                const s = File.readAllText(mod.dir + '/assets/locale/' + iso639_1 + '/LANG.json');
+                const o = JSON.parse(s);
+                LANG_STR = Object.fromEntries(
+                    Object.entries(o).map(([k, v]) => [k, allocMixedString(v)])
+                );
+                log('load lang.json', langDir, LANG_STR.length);
+            }
+        }
+    } catch (e) {
+        error('loadLangEx', e);
     }
-});
+}
+function loadLang() {
+    if (Process.platform === 'linux') {
+        Java.perform(function () {
+            var Locale = Java.use('java.util.Locale');
+            var iso639_1 = Locale.getDefault().getLanguage();
+
+            loadLangEx(iso639_1);
+        });
+    }
+    if (Process.platform === 'windows') {
+        const LOCALE_NAME_MAX_LENGTH = 85;
+
+        const GetUserDefaultLocaleName = findExportByName('kernel32.dll', 'GetUserDefaultLocaleName');
+        if (!GetUserDefaultLocaleName) {
+            throw new Error('找不到 GetUserDefaultLocaleName');
+        }
+
+        const getUserDefaultLocaleName = new NativeFunction(GetUserDefaultLocaleName, 'int', ['pointer', 'int']);
+
+        // 分配内存并调用
+        const buffer = Memory.alloc(LOCALE_NAME_MAX_LENGTH * 2); // 宽字符（UTF-16）需要按2字节长度来分配
+        const result = getUserDefaultLocaleName(buffer, LOCALE_NAME_MAX_LENGTH);
+
+        if (result > 0) {
+            const localeName = buffer.readUtf16String(result);
+            if (localeName) {
+                const iso639_1 = localeName.substring(0, 2).toLowerCase();
+                loadLangEx(iso639_1);
+            }
+        }
+    }
+}
 
 function main() {
     waitForModule('prog.exe',
@@ -147,7 +189,8 @@ function main() {
 
             info('prog.exe loaded @ ' + module.base + ' size=' + module.size);
             globalThis.mainModule = module;
-            info(Process.mainModule.path, modsDir, mod.dir);
+            info(Process.mainModule.path, globalThis.modsDir, mod.dir);
+            loadLang();
 
             if (!globalThis.modsDir) {
                 globalThis.modsDir = mod.dir + '/mods';
@@ -168,12 +211,22 @@ function main() {
          * @param {Module} module 
          */
         function (module) {
+            globalThis.application = Java.use('android.app.ActivityThread').currentApplication();
+            globalThis.applicationContext = globalThis.application.getApplicationContext();
+            var externalDir = globalThis.applicationContext.getExternalFilesDir('');
+
+            if (externalDir != null) {
+                if (!mod.dir) {
+                    mod.dir = externalDir.getAbsolutePath();
+                }
+            } else {
+                throw new Error("Failed get to mods dir");
+            }
+
             info('libmain.so loaded @ ' + module.base + ' size=' + module.size);
             globalThis.mainModule = module;
-            if (!mod.dir) {
-                mod.dir = '/data/data/' + getPackageName() + '/files';
-            }
-            info(Process.mainModule.path, modsDir, mod.dir);
+            info(Process.mainModule.path, globalThis.modsDir, mod.dir);
+            loadLang();
 
 
             if (!globalThis.modsDir) {
@@ -228,11 +281,213 @@ function hook() {
 
 
     // ── （NativeFunction） ─────────────────────────────────────────
-    const button_ex = new NativeFunction(findSymbol('button_ex'), 'pointer', ['float', 'float', 'int', 'pointer', 'pointer']);
+
+    const fs_register_func = new NativeFunction(findSymbol('fs_register_func'), 'int', ['pointer', 'pointer', 'pointer', 'int']);
+    /** @type {string[]} */
+    let fsFun = [];
+    Interceptor.attach(fs_register_func, {
+        onEnter(args) {
+            const funName = args[1].readCString();
+            if (funName)
+                fsFun.push(funName);
+        }
+    });
+
+
+    const testText = Memory.allocUtf8String('x');
+    let GAME_MARKER = false;
+    const fs_get_int = new NativeFunction(findSymbol('fs_get_int'), 'int', ['pointer', 'int']);
+    const fs_get_string = new NativeFunction(findSymbol('fs_get_string'), 'pointer', ['pointer', 'int']);
+    const fs_get_word_name = new NativeFunction(findSymbol('fs_get_word_name'), 'pointer', ['pointer', 'int']);
+    const fs_stack_depth = new NativeFunction(findSymbol('fs_stack_depth'), 'pointer', ['pointer', 'int']);
+    const fs_stack_size = new NativeFunction(findSymbol('fs_stack_size'), 'pointer', ['pointer', 'int']);
+    const fs_get_last_token = new NativeFunction(findSymbol('fs_get_last_token'), 'pointer', ['pointer']);
+    const fs_get_token = new NativeFunction(findSymbol('fs_get_token'), 'pointer', ['pointer', 'int']);
+    const fs_depth = new NativeFunction(findSymbol('fs_depth'), 'int', ['pointer']);
+    const fs_get_type = new NativeFunction(findSymbol('fs_depth'), 'int', ['pointer', 'int']);
+    let vocPath = '';
+    Interceptor.attach(findSymbol('fs_voc_push'), {
+        onEnter(args) {
+            this.args = args;
+            try {
+                const s = fs_get_word_name(args[0], -1).readCString();
+                vocPath += s;
+                // info('fs_voc_push', vocPath);
+            } catch (e) {
+                error(e);
+            }
+        }
+    });
+    Interceptor.attach(findSymbol('fs_voc_pop'), {
+        onEnter(args) {
+            vocPath = vocPath.replace(/\{[^{]*\{[^{]*$/, '{');
+            // info('fs_voc_pop', vocPath);
+        }
+    });
+    Interceptor.attach(findSymbol('fs_voc_clear'), {
+        onEnter(args) {
+            vocPath = '';
+        }
+    });
+    Interceptor.attach(findSymbol('fs_voc_clear_compile'), {
+        onEnter(args) {
+            vocPath = '';
+        }
+    });
+
+    let strchkCont = 0;
+    let repString = false;
+    Interceptor.attach(findSymbol('code_lit_string'), {
+        onEnter(args) {
+            const p = args[0].add(56).readPointer();
+            const s = p.add(4).readCString();
+            /* 0x42061a: code_lit_string, 0x43f7d1: word_strsplit*/
+
+
+            if (s && (s === '$strchk$' || s === 'incomplete string formation')) {
+                // const s2 = fs_get_word_name(args[0], -1);
+
+                strchkCont++;
+            } else {
+                if (strchkCont % 2 !== 0) {
+                    if (vocPath.indexOf('locals{') === -1) {
+                        repString = true;
+                    }
+                    const script_sys = findSymbol('script_sys').add(0x5e00);
+
+                    let last_token = fs_get_last_token(args[0]).readCString();
+                    let token = script_sys; `.add(15).readPointer().add(4).readPointer().readCString()`;
+                    let depth = fs_depth(script_sys);
+                    let stack = []
+                    for (let i = 1; i <= depth; i++) {
+                        const type = fs_get_type(script_sys, i);
+                        switch (type) {
+                            case 1:
+                                stack.push(fs_get_int(script_sys, i));
+                                break;
+                            case 2:
+                            case 3:
+                                stack.push(fs_get_string(script_sys, i).readCString() ?? null);
+                                break;
+                            default:
+                                stack.push('?');
+                                break;
+                        }
+                    }
+                    let tokens = ''
+                    // if (last_token !== '<no token>')
+                    //     tokens = fs_get_token(script_sys, 2).readCString() ?? '';
+                    if (last_token === '<no token>')
+                        tokens = script_sys.add(108).readPointer().readCString() ?? 'null';
+
+                    // info(`rep code_lit_string, "${vocPath}", ${strchkCont}, "${s}", ${repString}, ${last_token}, ${tokens}, ${JSON.stringify(stack)}`);
+                }
+            }
+        },
+        onLeave(retval) {
+            repString = false;
+        }
+    });
+    Interceptor.attach(findSymbol('fs_push_string'), {
+        onEnter(args) {
+            if (repString) {
+                args[1] = testText;
+            }
+        }
+    });
+
+    Interceptor.attach(findSymbol('compile_string'), {
+        onEnter(args) {
+            // if (GAME_MARKER) {
+            //     const s = args[1].readCString();
+            //     log('code_interpret', s);
+            // }
+
+        },
+        onLeave(retval) {
+            // if (repString) {
+            //     const s = retval.readCString();
+            //     log('code_interpret', s);
+            // }
+
+        }
+    });
+
+    Interceptor.attach(findSymbol('fs_run'), {
+        onEnter(args) {
+            if (GAME_MARKER) {
+                // info('fs_run', args[0],this.returnAddress);
+            }
+        },
+        onLeave(retval) {
+
+        }
+    });
+    Interceptor.attach(findSymbol('voc_get_word'), {
+        onEnter(args) {
+            // if (GAME_MARKER) {
+            //     info('voc_get_word', args[1].readCString(),this.returnAddress);
+            // }
+        },
+        onLeave(retval) {
+            if (GAME_MARKER) {
+                info('voc_get_word',retval.add(4).readPointer().readCString(), retval.readCString(),this.returnAddress);
+            }
+        }
+    });
+    Interceptor.attach(findSymbol('dict_get_name'), {
+        onEnter(args) {
+            // if (GAME_MARKER) {
+            //     info('voc_get_word', args[1].readCString(),this.returnAddress);
+            // }
+        },
+        onLeave(retval) {
+            if (GAME_MARKER) {
+                info('dict_get_name', retval.readCString(),this.returnAddress);
+            }
+        }
+    });
+    Interceptor.attach(findSymbol('word_stranew'), {
+        onEnter(args) {
+            const s = fs_get_string(args[0], -1).readCString();
+            if (s === 'GAME-MARKER') {
+                GAME_MARKER = true;
+            }
+        },
+        onLeave(retval) {
+
+        }
+    });
+
+    // const nothing = Memory.allocUtf8String("1111");
+    // const fs_pop_string = new NativeFunction(findSymbol('fs_pop_string'), 'pointer', ['pointer']);
+    // Interceptor.attach(fs_pop_string, {
+    //     onEnter(args) {
+    //     },
+    //     onLeave(retval) {
+    //         const s = retval.readCString();
+    //         if (s && s.indexOf('Twitter/Facebook') !== -1) {
+    //             info('fs_pop_string', vocPath, s, this.returnAddress);
+    //         }
+    //     }
+    // });
+
+    // const fs_get_string = new NativeFunction(findSymbol('fs_get_string'), 'pointer', ['pointer', 'int']);
+    // Interceptor.attach(findSymbol('fs_get_string'), {
+    //     onEnter(args) {
+    //     },
+    //     onLeave(retval) {
+    //         const s = retval.readCString();
+    //         if (s && s.indexOf('Twitter/Facebook') !== -1) {
+    //             info('fs_get_string', vocPath, s, this.returnAddress);
+    //         }
+    //     }
+    // });
 
 
     const strlen = new NativeFunction(resolveExport('strlen'), 'size_t', ['pointer']);
 
+    const button_ex = new NativeFunction(findSymbol('button_ex'), 'pointer', ['float', 'float', 'int', 'pointer', 'pointer']);
     if (Process.platform === 'linux' && Process.arch === 'arm64') {
         Interceptor.attach(button_ex, {
             onEnter(args) {
@@ -363,6 +618,8 @@ function hook() {
             const cyoa_add_choice = new NativeFunction(findSymbol('cyoa_add_choice'), 'int', []);
             const cyoa_set_title = new NativeFunction(findSymbol('cyoa_set_title'), 'int', ['pointer']);
             const cyoa_set_choice_func = new NativeFunction(findSymbol('cyoa_set_choice_func'), 'int', ['pointer']);
+            const cyoa_start = new NativeFunction(findSymbol('cyoa_start'), 'int', ['int']);
+            const cyoa_hint = new NativeFunction(findSymbol('cyoa_hint'), 'int', []);
 
             button_set_layout(1.0, 1.0);
             main_tabscreen_blank_tab_layout();
@@ -556,19 +813,19 @@ function hookUtf8() {
         case 'OCT-15-2025.15.11':
             load_gfx = globalThis.mainModule.base.add(0xEE0FC);
             btn_music_slider = globalThis.mainModule.base.add(0x100F64);
-            console.log('main_build_stamp', build_stamp);
+            log('main_build_stamp', build_stamp);
             break;
 
         case 'MAY-04-2023.09.30':
             load_gfx = globalThis.mainModule.base.add(0xB07D4);
             btn_music_slider = globalThis.mainModule.base.add(0xC4D98);
-            console.log('main_build_stamp', build_stamp);
+            log('main_build_stamp', build_stamp);
             break;
 
         default:
             load_gfx = findSymbol('load_gfx');
             btn_music_slider = findSymbol('btn_music_slider');
-            console.log('main_build_stamp', build_stamp);
+            log('main_build_stamp', build_stamp);
             break;
     }
 
@@ -638,7 +895,7 @@ function hookUtf8() {
         },
         'pointer', ['pointer', 'pointer']
     ));
-    console.log('[*] Replace glyphs_set_callback 已安装');
+    log('[*] Replace glyphs_set_callback 已安装');
 
     // ── Replace glyphs_batch_plot_ex ──────────────────────────────────────
     Interceptor.replace(GLYPHS_BATCH_PLOT_EX, new NativeCallback(
@@ -762,14 +1019,14 @@ function hookUtf8() {
         },
         'int', ['pointer', 'pointer', 'int', 'int', 'int']
     ));
-    console.log('[*] Replace glyphs_batch_plot_ex 已安装');
+    log('[*] Replace glyphs_batch_plot_ex 已安装');
 
     // ── Attach load_gfx ──────────────────────────────────────
     Interceptor.attach(load_gfx, {
-        onEnter: function (args) {
+        onEnter(args) {
             load_gfx_hooking = 1;
         },
-        onLeave: function (retval) {
+        onLeave(retval) {
             load_gfx_hooking = 0;
 
             const v0 = ATLAS_GET(0);
@@ -777,9 +1034,9 @@ function hookUtf8() {
 
             font_base_id = SPRITE_COUNT();
             let v150 = Memory.allocUtf8String(mod.dir + '/assets/font_ucs2_12x12.png');
-            // console.log(`[+] font atlas path: ${v150.readCString()}`);
+            // log(`[+] font atlas path: ${v150.readCString()}`);
             const v151 = ATLAS_LOAD_SPRITESHEET(v0, 0, 3072, 3072, 0, 1, v150) + v149;
-            console.log(`[+] font atlas loaded: base_id = ${font_base_id}, total_sprites = ${SPRITE_COUNT()}, returned = ${v149}, new = ${v151}`);
+            log(`[+] font atlas loaded: base_id = ${font_base_id}, total_sprites = ${SPRITE_COUNT()}, returned = ${v149}, new = ${v151}`);
 
             if (!ATLAS_UPLOAD(v0, 0, 3)) {
                 WRAPPER_SET_TITLE(Memory.allocUtf8String('DR2C: (!RGB5_A1)'));
@@ -797,12 +1054,12 @@ function hookUtf8() {
             }
         }
     });
-    console.log('[*] Attach load_gfx 已安装');
+    log('[*] Attach load_gfx 已安装');
 
     // ── load_gfx_hooking ──────────────────────────────────────
     Interceptor.replace(ATLAS_UPLOAD, new NativeCallback(function (a, b, c) {
         if (load_gfx_hooking) {
-            console.log("[*] skip atlas_upload ", a, b, c);
+            log("[*] skip atlas_upload ", a, b, c);
             return 1;
         }
         return ATLAS_UPLOAD(a, b, c);
@@ -810,20 +1067,20 @@ function hookUtf8() {
 
     Interceptor.replace(ATLAS_FREE_IMAGE_DATA, new NativeCallback(function (a) {
         if (load_gfx_hooking) {
-            console.log("[*] skip ATLAS_FREE_IMAGE_DATA ", a);
+            log("[*] skip ATLAS_FREE_IMAGE_DATA ", a);
             return 1;
         }
         return ATLAS_FREE_IMAGE_DATA(a);
     }, 'void', ['int']));
 
     Interceptor.attach(ATLAS_CREATE_TEXTURE, {
-        onEnter: function (args) {
+        onEnter(args) {
             if (load_gfx_hooking) {
                 const width = args[1].toInt32();
                 const height = args[2].toInt32();
                 args[1] = ptr(4096);
                 args[2] = ptr(4096);
-                console.log(`[*] atlas_create_texture: ${width}x${height} → 4096x4096`);
+                log(`[*] atlas_create_texture: ${width}x${height} → 4096x4096`);
             }
         }
     });
@@ -834,7 +1091,7 @@ function hookUtf8() {
     let skip_path_rep = 0;
 
     Interceptor.attach(WRAPPER_FILE_DATA_PATH, {
-        onLeave: function (retval) {
+        onLeave(retval) {
             if (skip_path_rep) return;
 
             retval.replace(assetsDir);
@@ -842,7 +1099,7 @@ function hookUtf8() {
     });
 
     Interceptor.attach(FILE_DATA_PATH, {
-        onEnter: function (args) {
+        onEnter(args) {
             const str = args[0].readCString();
             try {
                 const f = fs.readFileSync(mod.dir + '/assets/' + str);
@@ -851,13 +1108,13 @@ function hookUtf8() {
                 skip_path_rep = 1;
             }
         },
-        onLeave: function (retval) {
+        onLeave(retval) {
             skip_path_rep = 0;
         }
     });
 
     Interceptor.attach(FILE_OPEN_DATA_READ, {
-        onEnter: function (args) {
+        onEnter(args) {
             const str = args[0].readCString();
             try {
                 const f = fs.readFileSync(mod.dir + '/assets/' + str);
@@ -866,7 +1123,7 @@ function hookUtf8() {
                 skip_path_rep = 1;
             }
         },
-        onLeave: function (retval) {
+        onLeave(retval) {
             skip_path_rep = 0;
         }
     });
@@ -943,7 +1200,7 @@ function hookUtf8() {
 
         onLeave(retval) {
             if (this.returnAddress <= findSymbol('team_btn_char_stats')) return;
-            // console.log(`chara_stat_name ret: ${this.returnAddress}`);
+            // log(`chara_stat_name ret: ${this.returnAddress}`);
             const names = [
                 "morale",      // 0
                 "attitude",    // 1
@@ -1005,7 +1262,7 @@ function hookUtf8() {
         onEnter(args) {
             const str = readByteString(args[0]);
             if (!str || !LANG_STR[str]) return;
-            // console.log(`main_stextf ${str}`);
+            // log(`main_stextf ${str}`);
             args[0] = LANG_STR[str];
             const matches = str.match(/%./g);
             if (!matches) return;
@@ -1023,7 +1280,7 @@ function hookUtf8() {
         onEnter(args) {
             const str = readByteString(args[2]);
             if (!str || !LANG_STR[str]) return;
-            // console.log(`snprintf ${str}`);
+            // log(`snprintf ${str}`);
             args[2] = LANG_STR[str];
             const matches = str.match(/%./g);
             if (!matches) return;
@@ -1042,11 +1299,11 @@ function hookUtf8() {
     if (build_stamp === 'MAY-04-2023.09.30') {
         /** @param {number} offset @param {number[]} arr  */
         function repAss(offset, arr) {
-            // console.log("修改前:", Instruction.parse(globalThis.mainModule.base.add(offset)).toString());
+            // log("修改前:", Instruction.parse(globalThis.mainModule.base.add(offset)).toString());
             Memory.patchCode(globalThis.mainModule.base.add(offset), arr.length, code => {
                 code.writeByteArray(arr);
             });
-            // console.log("修改后:", Instruction.parse(globalThis.mainModule.base.add(offset)).toString());
+            // log("修改后:", Instruction.parse(globalThis.mainModule.base.add(offset)).toString());
         }
 
         /** @param {NativePointer} base @param {number} offset @param {Arm64Register} reg @param {NativePointer} addr  */
@@ -1070,7 +1327,7 @@ function hookUtf8() {
                 perkDesc[index] = Memory.alloc(0x300);
                 Memory.copy(perkDesc[index], src, 0x300);
                 perkDesc[index].add(0x300).writeByteArray([0]);
-                // console.log(`perkDesc`, index, perkDesc[index], perkDesc[index].readCString());
+                // log(`perkDesc`, index, perkDesc[index], perkDesc[index].readCString());
             }
             return result;
         }, 'pointer', ['pointer']);
@@ -1080,7 +1337,7 @@ function hookUtf8() {
             onEnter(args) {
                 if (!args[0]) return;
                 if (globalThis.mainModule.base.add(0x2EF118) <= args[0] && args[0] <= globalThis.mainModule.base.add(0x2EF118).add(0x10240 * 2)) {
-                    // console.log('cyoa_just_ok',args[0]);
+                    // log('cyoa_just_ok',args[0]);
                     const index = Math.floor(args[0].sub(globalThis.mainModule.base.add(0x2EF118)).toInt32() / 0xA0);
                     args[0] = perkDesc[index];
                 }
@@ -1206,18 +1463,21 @@ function hookUtf8() {
         repAss(0xC67F8, [0x09, 0x4d, 0x00, 0xf9]);
         repAss(0xD53D0, [0x01, 0x4d, 0x40, 0xf9]);
 
-        console.log('[*] perks 扩展完成');
+        log('[*] perks 扩展完成');
 
     }
 
 
-    console.log('[*] hook 初始化完成');
+    log('[*] hook 初始化完成');
 }
 
 /** @type {Object<string, NativePointer>} */
 const strList = {};
 /** @param {string} str @returns {NativePointer} */
 function L(str) {
+    if (LANG_STR[str]) {
+        return LANG_STR[str];
+    }
     if (!strList[str]) {
         const str_p = allocMixedString(str);
         strList[str] = str_p;
@@ -1298,14 +1558,18 @@ function allocMixedString(s) {
     buf.writeByteArray(bytes);
     return buf;
 }
-/** @param {NativePointer} p  */
+/** @param {NativePointer} p  @returns {string} */
 function readByteString(p) {
     let s = '';
     let i = 0;
     while (true) {
         const b = p.add(i).readU8();
         if (b === 0) break;
-        s += String.fromCharCode(b);   // 0xF5 → "\u00F5"
+        if (b > 0x7F) {
+            s += String.fromCharCode((0xE0 << 8) | b);    // 非法utf8转为: 0xF5 → "\uE0F5"
+        } else {
+            s += String.fromCharCode(b);
+        }
         i++;
     }
     return s;
@@ -1581,7 +1845,7 @@ async function selzip() {
                     var FileOutputStream = Java.use('java.io.FileOutputStream');
 
                     var input = activity.getContentResolver().openInputStream(uri);
-                    if (input === null) { console.log('打不开'); return null; }
+                    if (input === null) { log('打不开'); return null; }
 
                     var dst = File.$new(activity.getCacheDir(), 'sel.zip');
                     var fos = FileOutputStream.$new(dst);
@@ -1590,13 +1854,13 @@ async function selzip() {
                     while ((n = input.read(buf)) > 0) fos.write(buf, 0, n);
                     fos.close(); input.close();
 
-                    console.log('dump 到:', dst.getAbsolutePath());
+                    log('dump 到:', dst.getAbsolutePath());
                     return dst.getAbsolutePath();
                 }
 
                 Java.choose('com.noodlecake.drtc.DrtcGameActivity', {
                     onMatch: function (activity) {
-                        console.log('找到 Activity 实例:', activity);
+                        log('找到 Activity 实例:', activity);
                         /**
                          * Description placeholder
                          *
@@ -1607,14 +1871,14 @@ async function selzip() {
                         try {
                             // 先尝试旧版本重载（3个参数）
                             originalOnActivityResult = activity.onActivityResult.overload('int', 'int', 'android.content.Intent');
-                            console.log('[✓] 使用旧版 onActivityResult（3个参数）');
+                            log('[✓] 使用旧版 onActivityResult（3个参数）');
                         } catch (e) {
                             // 如果失败，尝试新版本重载（4个参数）
                             try {
                                 originalOnActivityResult = activity.onActivityResult.overload('int', 'int', 'android.content.Intent', 'android.app.ComponentCaller');
-                                console.log('[✓] 使用新版 onActivityResult（4个参数）');
+                                log('[✓] 使用新版 onActivityResult（4个参数）');
                             } catch (e2) {
-                                console.log('[✗] 无法找到合适的 onActivityResult 重载');
+                                log('[✗] 无法找到合适的 onActivityResult 重载');
                                 return;
                             }
                         }
@@ -1631,15 +1895,15 @@ async function selzip() {
                                 if (requestCode === 1234) {
                                     if (resultCode === Activity.RESULT_OK.value && data !== null) {
                                         var uri = data.getData();
-                                        console.log('\n========== 文件选择结果 ==========');
-                                        console.log('Uri:', uri.toString());
-                                        console.log('路径:', uri.getPath());
+                                        log('\n========== 文件选择结果 ==========');
+                                        log('Uri:', uri.toString());
+                                        log('路径:', uri.getPath());
 
                                         const modDir = dumpFromUri(activity, uri);
                                         resolve(modDir);
-                                        console.log('===================================\n');
+                                        log('===================================\n');
                                     } else {
-                                        console.log('用户取消了选择');
+                                        log('用户取消了选择');
                                         reject('close select');
                                     }
                                 }
@@ -1647,7 +1911,7 @@ async function selzip() {
                                 // 调用原始方法
                                 return originalOnActivityResult.call(this, requestCode, resultCode, data);
                             };
-                        console.log('[✓] onActivityResult Hook 成功');
+                        log('[✓] onActivityResult Hook 成功');
 
                         // ========== 2. 然后打开文件选择器 ==========
                         var intent = Intent.$new();
@@ -1656,10 +1920,10 @@ async function selzip() {
                         intent.addCategory(Intent.CATEGORY_OPENABLE.value);
 
                         activity.startActivityForResult(intent, 1234);
-                        console.log('[✓] 文件选择器已打开');
+                        log('[✓] 文件选择器已打开');
                     },
                     onComplete: function () {
-                        console.log('Activity 实例搜索结束');
+                        log('Activity 实例搜索结束');
                     }
                 });
             });
