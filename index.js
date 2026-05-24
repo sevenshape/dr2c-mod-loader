@@ -294,7 +294,7 @@ function hook() {
     });
 
 
-    const testText = Memory.allocUtf8String('x');
+    const testText = Memory.allocUtf8String(' ');
     let GAME_MARKER = false;
     const fs_get_int = new NativeFunction(findSymbol('fs_get_int'), 'int', ['pointer', 'int']);
     const fs_get_string = new NativeFunction(findSymbol('fs_get_string'), 'pointer', ['pointer', 'int']);
@@ -337,51 +337,48 @@ function hook() {
 
     let strchkCont = 0;
     let repString = false;
+    const cyoa_is_active = new NativeFunction(findSymbol('cyoa_is_active'), 'bool', []);
+    const preVoc = { s1: NULL, s2: NULL, s3: NULL }
     Interceptor.attach(findSymbol('code_lit_string'), {
         onEnter(args) {
             const p = args[0].add(56).readPointer();
             const s = p.add(4).readCString();
             /* 0x42061a: code_lit_string, 0x43f7d1: word_strsplit*/
+            let result = false;
 
+            if (!s) return;
 
             if (s && (s === '$strchk$' || s === 'incomplete string formation')) {
-                // const s2 = fs_get_word_name(args[0], -1);
-
                 strchkCont++;
-            } else {
-                if (strchkCont % 2 !== 0) {
-                    if (vocPath.indexOf('locals{') === -1) {
-                        repString = true;
-                    }
-                    const script_sys = findSymbol('script_sys').add(0x5e00);
+                return;
+            }
 
-                    let last_token = fs_get_last_token(args[0]).readCString();
-                    let token = script_sys; `.add(15).readPointer().add(4).readPointer().readCString()`;
-                    let depth = fs_depth(script_sys);
-                    let stack = []
-                    for (let i = 1; i <= depth; i++) {
-                        const type = fs_get_type(script_sys, i);
-                        switch (type) {
-                            case 1:
-                                stack.push(fs_get_int(script_sys, i));
-                                break;
-                            case 2:
-                            case 3:
-                                stack.push(fs_get_string(script_sys, i).readCString() ?? null);
-                                break;
-                            default:
-                                stack.push('?');
-                                break;
-                        }
-                    }
-                    let tokens = ''
-                    // if (last_token !== '<no token>')
-                    //     tokens = fs_get_token(script_sys, 2).readCString() ?? '';
-                    if (last_token === '<no token>')
-                        tokens = script_sys.add(108).readPointer().readCString() ?? 'null';
-
-                    // info(`rep code_lit_string, "${vocPath}", ${strchkCont}, "${s}", ${repString}, ${last_token}, ${tokens}, ${JSON.stringify(stack)}`);
+            if (strchkCont % 2 !== 0) {
+                if (vocPath.indexOf('locals{') === -1) {
+                    result = true;
                 }
+
+            }
+
+            // if (cyoa_is_active()) {
+            //     result = true;
+            // }
+
+            // if (!GAME_MARKER) return;
+
+            const last_token = fs_get_last_token(args[0]).readCString();
+
+            let s1 = args[0].add(100).readPointer();
+            let s2 = args[0].add(104).readPointer();
+            let s3 = args[0].add(108).readPointer();
+
+            const codeLeft = code[code.length - 14 -6];
+            const len = codeLeft.s2.sub(codeLeft.s3).toInt32();
+
+            if (result) {
+                info('code_lit_string', `"${s}"\n`, `"${repString}"`, `"${vocPath}"\n`, 
+                    `\`${codeLeft.s3.readCString(len)}\`\n`,
+                    `\`${last_token}\`` , `"${s2}"`, `"${s3}"`);
             }
         },
         onLeave(retval) {
@@ -396,23 +393,6 @@ function hook() {
         }
     });
 
-    Interceptor.attach(findSymbol('compile_string'), {
-        onEnter(args) {
-            // if (GAME_MARKER) {
-            //     const s = args[1].readCString();
-            //     log('code_interpret', s);
-            // }
-
-        },
-        onLeave(retval) {
-            // if (repString) {
-            //     const s = retval.readCString();
-            //     log('code_interpret', s);
-            // }
-
-        }
-    });
-
     Interceptor.attach(findSymbol('fs_run'), {
         onEnter(args) {
             if (GAME_MARKER) {
@@ -423,16 +403,30 @@ function hook() {
 
         }
     });
-    Interceptor.attach(findSymbol('voc_get_word'), {
+    var code = [{ s1: NULL, s2: NULL, s3: NULL, last_token: '' }];
+    Interceptor.attach(findSymbol('code_interpret'), {
         onEnter(args) {
-            // if (GAME_MARKER) {
-            //     info('voc_get_word', args[1].readCString(),this.returnAddress);
-            // }
+
+            const s1 = args[0].add(100).readPointer();
+            const s2 = args[0].add(104).readPointer();
+            const s3 = args[0].add(108).readPointer();
+            if (s3.equals(code[code.length - 1].s3)) return;
+
+            // const last_token = readByteString(fs_get_last_token(args[0]));
+            code.push({ s1: s1, s2: s2, s3: s3, last_token: 'last_token' });
         },
         onLeave(retval) {
-            if (GAME_MARKER) {
-                info('voc_get_word',retval.add(4).readPointer().readCString(), retval.readCString(),this.returnAddress);
-            }
+        }
+    });
+    Interceptor.attach(findSymbol('voc_get_word'), {
+        onEnter(args) {
+
+            // voc_word = args[1].readCString();
+        },
+        onLeave(retval) {
+            // if (GAME_MARKER) {
+            //     info('voc_get_word', retval.add(4).readPointer().readCString(), retval.readCString(), this.returnAddress);
+            // }
         }
     });
     Interceptor.attach(findSymbol('dict_get_name'), {
@@ -442,9 +436,9 @@ function hook() {
             // }
         },
         onLeave(retval) {
-            if (GAME_MARKER) {
-                info('dict_get_name', retval.readCString(),this.returnAddress);
-            }
+            // if (GAME_MARKER) {
+            //     info('dict_get_name', retval.readCString(), this.returnAddress);
+            // }
         }
     });
     Interceptor.attach(findSymbol('word_stranew'), {
@@ -895,7 +889,7 @@ function hookUtf8() {
         },
         'pointer', ['pointer', 'pointer']
     ));
-    log('[*] Replace glyphs_set_callback 已安装');
+    log('Replace glyphs_set_callback 已安装');
 
     // ── Replace glyphs_batch_plot_ex ──────────────────────────────────────
     Interceptor.replace(GLYPHS_BATCH_PLOT_EX, new NativeCallback(
@@ -1019,7 +1013,7 @@ function hookUtf8() {
         },
         'int', ['pointer', 'pointer', 'int', 'int', 'int']
     ));
-    log('[*] Replace glyphs_batch_plot_ex 已安装');
+    log('Replace glyphs_batch_plot_ex 已安装');
 
     // ── Attach load_gfx ──────────────────────────────────────
     Interceptor.attach(load_gfx, {
@@ -1054,12 +1048,12 @@ function hookUtf8() {
             }
         }
     });
-    log('[*] Attach load_gfx 已安装');
+    log('Attach load_gfx 已安装');
 
     // ── load_gfx_hooking ──────────────────────────────────────
     Interceptor.replace(ATLAS_UPLOAD, new NativeCallback(function (a, b, c) {
         if (load_gfx_hooking) {
-            log("[*] skip atlas_upload ", a, b, c);
+            log("skip atlas_upload ", a, b, c);
             return 1;
         }
         return ATLAS_UPLOAD(a, b, c);
@@ -1067,7 +1061,7 @@ function hookUtf8() {
 
     Interceptor.replace(ATLAS_FREE_IMAGE_DATA, new NativeCallback(function (a) {
         if (load_gfx_hooking) {
-            log("[*] skip ATLAS_FREE_IMAGE_DATA ", a);
+            log("skip ATLAS_FREE_IMAGE_DATA ", a);
             return 1;
         }
         return ATLAS_FREE_IMAGE_DATA(a);
@@ -1080,7 +1074,7 @@ function hookUtf8() {
                 const height = args[2].toInt32();
                 args[1] = ptr(4096);
                 args[2] = ptr(4096);
-                log(`[*] atlas_create_texture: ${width}x${height} → 4096x4096`);
+                log(`atlas_create_texture: ${width}x${height} → 4096x4096`);
             }
         }
     });
@@ -1463,12 +1457,12 @@ function hookUtf8() {
         repAss(0xC67F8, [0x09, 0x4d, 0x00, 0xf9]);
         repAss(0xD53D0, [0x01, 0x4d, 0x40, 0xf9]);
 
-        log('[*] perks 扩展完成');
+        log('perks 扩展完成');
 
     }
 
 
-    log('[*] hook 初始化完成');
+    log('hook 初始化完成');
 }
 
 /** @type {Object<string, NativePointer>} */
