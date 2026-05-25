@@ -25,6 +25,8 @@
   "dependencies": {
     "frida-fs": "^7.0.0",
     "frida-java-bridge": "^7.0.13",
-    "jszip": "^3.10.1"
+    "i18next": "^26.2.0",
+    "jszip": "^3.10.1",
+    "xregexp": "^5.1.2"
   }
 }

@@ -294,7 +294,7 @@ function hook() {
     });
 
 
-    const testText = Memory.allocUtf8String(' ');
+    const repText = Memory.allocUtf8String(' ');
     let GAME_MARKER = false;
     const fs_get_int = new NativeFunction(findSymbol('fs_get_int'), 'int', ['pointer', 'int']);
     const fs_get_string = new NativeFunction(findSymbol('fs_get_string'), 'pointer', ['pointer', 'int']);
@@ -320,7 +320,7 @@ function hook() {
     });
     Interceptor.attach(findSymbol('fs_voc_pop'), {
         onEnter(args) {
-            vocPath = vocPath.replace(/\{[^{]*\{[^{]*$/, '{');
+            vocPath = vocPath.replace(/[^{]*\{[^{]*$/, '');
             // info('fs_voc_pop', vocPath);
         }
     });
@@ -335,110 +335,106 @@ function hook() {
         }
     });
 
-    let strchkCont = 0;
-    let repString = false;
     const cyoa_is_active = new NativeFunction(findSymbol('cyoa_is_active'), 'bool', []);
-    const preVoc = { s1: NULL, s2: NULL, s3: NULL }
-    Interceptor.attach(findSymbol('code_lit_string'), {
-        onEnter(args) {
-            const p = args[0].add(56).readPointer();
-            const s = p.add(4).readCString();
-            /* 0x42061a: code_lit_string, 0x43f7d1: word_strsplit*/
-            let result = false;
 
-            if (!s) return;
-
-            if (s && (s === '$strchk$' || s === 'incomplete string formation')) {
-                strchkCont++;
-                return;
-            }
-
-            if (strchkCont % 2 !== 0) {
-                if (vocPath.indexOf('locals{') === -1) {
-                    result = true;
-                }
-
-            }
-
-            // if (cyoa_is_active()) {
-            //     result = true;
-            // }
-
-            // if (!GAME_MARKER) return;
-
-            const last_token = fs_get_last_token(args[0]).readCString();
-
-            let s1 = args[0].add(100).readPointer();
-            let s2 = args[0].add(104).readPointer();
-            let s3 = args[0].add(108).readPointer();
-
-            const codeLeft = code[code.length - 14 -6];
-            const len = codeLeft.s2.sub(codeLeft.s3).toInt32();
-
-            if (result) {
-                info('code_lit_string', `"${s}"\n`, `"${repString}"`, `"${vocPath}"\n`, 
-                    `\`${codeLeft.s3.readCString(len)}\`\n`,
-                    `\`${last_token}\`` , `"${s2}"`, `"${s3}"`);
-            }
-        },
-        onLeave(retval) {
-            repString = false;
-        }
-    });
-    Interceptor.attach(findSymbol('fs_push_string'), {
-        onEnter(args) {
-            if (repString) {
-                args[1] = testText;
-            }
-        }
-    });
-
-    Interceptor.attach(findSymbol('fs_run'), {
-        onEnter(args) {
-            if (GAME_MARKER) {
-                // info('fs_run', args[0],this.returnAddress);
-            }
-        },
-        onLeave(retval) {
-
-        }
-    });
     var code = [{ s1: NULL, s2: NULL, s3: NULL, last_token: '' }];
+    var code_interpret_ = false;
+    var code_interpret_word_ = '';
+    var code_interpret_load_word_ = false;
+    var code_interpret_code_text_ = NULL;
+    var code_interpret_word_len_ = 0;
+    var centext = ['root']
     Interceptor.attach(findSymbol('code_interpret'), {
         onEnter(args) {
+            code_interpret_ = true;
 
             const s1 = args[0].add(100).readPointer();
             const s2 = args[0].add(104).readPointer();
             const s3 = args[0].add(108).readPointer();
-            if (s3.equals(code[code.length - 1].s3)) return;
+            code_interpret_code_text_ = s3;
 
-            // const last_token = readByteString(fs_get_last_token(args[0]));
             code.push({ s1: s1, s2: s2, s3: s3, last_token: 'last_token' });
+        },
+        onLeave(retval) {
+            if (code_interpret_word_ === '($') {
+                centext.push('($');
+            }
+            if (code_interpret_word_ === '$)') {
+                if (centext.at(-1) === '($')
+                    centext.pop();
+                // else
+                //     throw new Error("($ not find");
+            }
+
+            if (code_interpret_word_ === 'choice(') {
+                centext.push('choice(');
+            }
+            if (code_interpret_word_ === ')choice' || code_interpret_word_ === ')choice:') {
+                if (centext.at(-1) === 'choice(')
+                    centext.pop();
+                // else
+                //     throw new Error("choice( not find");
+            }
+            // info('code_interpret', code_interpret_word_, code_interpret_load_word_, code_interpret_word_len_,args[1].readCString(args[2].toInt32()));
+
+            code_interpret_ = false;
+            code_interpret_word_ = '';
+            code_interpret_load_word_ = false;
+        }
+    });
+    Interceptor.attach(findSymbol('compile_string'), {
+        onEnter(args) {
+            if (!code_interpret_) return;
+            const s = args[1].readCString(args[2].toInt32());
+            let after = args[1].add(args[2].toInt32() + 1).readCString(200) ?? '';
+            let nafter = after.match(/^[^\n"]*/)?.[0] ?? '';
+            let nsafter = after.match(/^[^\n"]*/)?.[0] ?? '';
+            
+            /** @type {string[]} */
+            const codes = after.match(/\S+/g) ?? [];
+            /** @type {string[]} */
+            const ncodes = nafter.match(/\S+/g) ?? [];
+            /** @type {string[]} */
+            const nscodes = nsafter.match(/\S+/g) ?? [];
+
+            // if (ncodes.indexOf('cyoa-title!') !== -1 || ncodes.indexOf('text!') !== -1 || after.indexOf('+crtext') !== -1 ||
+            
+            //     centext.at(-1) === 'choice(' || centext.at(-1) === '($' && vocPath.indexOf('locals{') === -1) {
+            //     info('code_interpret', vocPath, after);
+            //     info(s);
+            //     // info(args[1].readCString(10));
+            //     args[1] = repText;
+            //     args[2] = ptr(1);
+            // }
+            // if (codeList.indexOf('text!') !== -1) {
+            //     info('code_interpret',codeList.indexOf('text!'), vocPath, after);
+            //     info(s);
+            //     info(args[1].readCString(10));
+            //     args[1] = repText;
+            //     args[2] = ptr(1);
+            // }
         },
         onLeave(retval) {
         }
     });
     Interceptor.attach(findSymbol('voc_get_word'), {
         onEnter(args) {
-
-            // voc_word = args[1].readCString();
+            if (!code_interpret_) return;
+            const s = args[1].readUtf8String(args[2].toInt32()) ?? '';
+            code_interpret_word_ = s;
+            code_interpret_word_len_ = args[2].toInt32();
         },
         onLeave(retval) {
-            // if (GAME_MARKER) {
-            //     info('voc_get_word', retval.add(4).readPointer().readCString(), retval.readCString(), this.returnAddress);
-            // }
+
         }
     });
-    Interceptor.attach(findSymbol('dict_get_name'), {
+    Interceptor.attach(findSymbol('vm_load_word'), {
         onEnter(args) {
-            // if (GAME_MARKER) {
-            //     info('voc_get_word', args[1].readCString(),this.returnAddress);
-            // }
+            if (!code_interpret_) return;
+            code_interpret_load_word_ = true;
         },
         onLeave(retval) {
-            // if (GAME_MARKER) {
-            //     info('dict_get_name', retval.readCString(), this.returnAddress);
-            // }
+
         }
     });
     Interceptor.attach(findSymbol('word_stranew'), {
@@ -447,9 +443,6 @@ function hook() {
             if (s === 'GAME-MARKER') {
                 GAME_MARKER = true;
             }
-        },
-        onLeave(retval) {
-
         }
     });
 
@@ -1028,9 +1021,9 @@ function hookUtf8() {
 
             font_base_id = SPRITE_COUNT();
             let v150 = Memory.allocUtf8String(mod.dir + '/assets/font_ucs2_12x12.png');
-            // log(`[+] font atlas path: ${v150.readCString()}`);
+            // log(`font atlas path: ${v150.readCString()}`);
             const v151 = ATLAS_LOAD_SPRITESHEET(v0, 0, 3072, 3072, 0, 1, v150) + v149;
-            log(`[+] font atlas loaded: base_id = ${font_base_id}, total_sprites = ${SPRITE_COUNT()}, returned = ${v149}, new = ${v151}`);
+            log(`font atlas loaded: base_id = ${font_base_id}, total_sprites = ${SPRITE_COUNT()}, returned = ${v149}, new = ${v151}`);
 
             if (!ATLAS_UPLOAD(v0, 0, 3)) {
                 WRAPPER_SET_TITLE(Memory.allocUtf8String('DR2C: (!RGB5_A1)'));
