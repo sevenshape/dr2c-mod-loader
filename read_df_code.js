@@ -46,16 +46,14 @@ const args = parseArgs(process.argv);
 
 
 // ---------- 4. 分词 ----------
-// 字符串字面量 或 非空白序列
-const TOKEN_RE = /"(?:[^"\\]|\\.)*"|\S+/g;
-
 
 /**
  * @param {*} src 
  * @returns {*} 
  */
 function tokenize(src) {
-    const tokens = src.match(TOKEN_RE) || [];
+    // 字符串字面量 或 非空白序列
+    const tokens = src.match(/"(?:[^"\\]|\\.)*"|\S+/g) || [];
     return tokens;
 }
 
@@ -77,27 +75,33 @@ function toTemplate(src) {
      */
     const stack = [];
     const tokens = tokenize(src);
+    const i18nTokens = [...tokens];
+    let i18nTokensOffset = 0;
 
     for (let index = 0; index < tokens.length; index++) {
 
         /** @type {Object.<string, {arity: number, fn: Function}>} */
         const STACK_OPS = {
             // 'bbold':   { arity: 1, fn: (s) => '{{bbold}}' + s },
-            '($': {
-                arity: 0, fn: () => {
-                    stack.push('')
-                }
-            },
+            // '($': {
+            //     arity: 0, fn: () => {
+            //         stack.push('')
+            //     }
+            // },
             '$)': {
                 arity: 2, fn: () => {
                     if (stack.length === 0) {
                         stack.push(``);
                         stack.push(`%${varCount + 1}$s`);
+                        i18nTokens.splice(index + i18nTokensOffset, 0, 'i18n.arg.push')
                         varCount++;
+                        i18nTokensOffset++;
                     }
                     if (stack.length === 1) {
                         stack.push(`%${varCount + 1}$s`);
+                        i18nTokens.splice(index + i18nTokensOffset, 0, 'i18n.arg.push')
                         varCount++;
+                        i18nTokensOffset++;
                     }
                     const args = stack.splice(stack.length - 2, 2);
                     stack.push(args[0] + args[1]);
@@ -108,11 +112,15 @@ function toTemplate(src) {
                     if (stack.length === 0) {
                         stack.push(``);
                         stack.push(`%${varCount + 1}$s`);
+                        i18nTokens.splice(index + i18nTokensOffset, 0, 'i18n.arg.push')
                         varCount++;
+                        i18nTokensOffset++;
                     }
                     if (stack.length === 1) {
                         stack.push(`%${varCount + 1}$s`);
+                        i18nTokens.splice(index + i18nTokensOffset, 0, 'i18n.arg.push')
                         varCount++;
+                        i18nTokensOffset++;
                     }
                     const args = stack.splice(stack.length - 2, 2);
                     stack.push(args[0] + args[1]);
@@ -152,7 +160,7 @@ function toTemplate(src) {
     if (stack.length !== 1) {
         throw new Error(`栈未收敛, 剩余 ${stack.length} 项: ${JSON.stringify(stack)}, \ntokens: ${JSON.stringify(tokens)}, \nsrc: ${JSON.stringify(src)}`);
     }
-    return { key: JSON.stringify(tokens), tokens, template: stack[0], strCount, varCount };
+    return { src, tokens, i18nTokens, template: stack[0], strCount, varCount };
 }
 
 // require('util').inspect.defaultOptions.breakLength = Infinity;
@@ -198,45 +206,83 @@ dfFiles.forEach(file => {
         // @ts-ignore
         const content = fs.readFileSync(path.resolve(filePath), args.encoding);
         const result = findTextBlocks(content);
-        const matchs = [{
-            type: '($',
-            result: findTextBlocks(content)
-        }, {
-            type: 'shove',
-            result: content.match(/"[^"]*?" shove/g) || []
-        }, {
-            type: 'choice(',
-            result: content.match(/choice\([\s\S]*?\)choice/g) || []
-        }, {
-            type: 'choice-card',
-            result: content.match(/""[^"]*?" \w?choice-card/g) || []
-        }, {
-            type: 'shove',
-            result: content.match(/"[^"]*?" shove/g) || []
-        }, {
-            type: 'shove',
-            result: content.match(/"[^"]*?" shove/g) || []
-        }, {
-            type: 'shove',
-            result: content.match(/"[^"]*?" shove/g) || []
-        }, {
-            type: 'shove',
-            result: content.match(/"[^"]*?" shove/g) || []
-        }, {
-            type: 'shove',
-            result: content.match(/"[^"]*?" shove/g) || []
-        }, {
-            type: 'shove',
-            result: content.match(/"[^"]*?" shove/g) || []
-        }]
-        // console.log(result);
+        const matchs = [
+            {
+                type: '($',
+                result: findTextBlocks(content),
+                i18nTokenInsert:
+                    /**
+                     * 
+                     * @param {string} src 
+                     * @param {string[]} tokens 
+                     */
+                    (src, tokens) => { tokens.push(`"${src.replaceAll('"', '\uE034')}"`); tokens.push(`i18n.format`) }
+            },
+            {
+                type: 'shove',
+                result: content.match(/"[^"]*?" shove/g) || [],
+                i18nTokenInsert:
+                    /**
+                     * 
+                     * @param {string} src 
+                     * @param {string[]} tokens 
+                     */
+                    (src, tokens) => { tokens.splice(-1, 0, `"${src.replaceAll('"', '\uE034')}"`); tokens.splice(-1, 0, `i18n.format`) }
+            },
+            // {
+            //     type: 'choice(',
+            //     result: content.match(/choice\([\s\S]*?\)choice/g) || []
+            // },
+            // {
+            //     type: 'choice-card',
+            //     result: content.match(/""[^"]*?" \w?choice-card/g) || []
+            // },
+            // {
+            //     type: 'shove',
+            //     result: content.match(/"[^"]*?" shove/g) || []
+            // },
+            // {
+            //     type: 'shove',
+            //     result: content.match(/"[^"]*?" shove/g) || []
+            // },
+            // {
+            //     type: 'shove',
+            //     result: content.match(/"[^"]*?" shove/g) || []
+            // },
+            // {
+            //     type: 'shove',
+            //     result: content.match(/"[^"]*?" shove/g) || []
+            // },
+            // {
+            //     type: 'shove',
+            //     result: content.match(/"[^"]*?" shove/g) || []
+            // },
+            // {
+            //     type: 'shove',
+            //     result: content.match(/"[^"]*?" shove/g) || []
+            // }
+        ]
+        const map = {};
         for (const mat of matchs) {
             for (const item of mat.result) {
-                const t = toTemplate(item);
-                if (t.strCount !== 0)
-                    console.log(JSON.stringify(t, null, 4));
+
+                try {
+                    const t = toTemplate(item);
+                    // @ts-ignore
+                    mat.i18nTokenInsert(JSON.stringify(t.tokens), t.i18nTokens)
+
+                    // @ts-ignore
+                    map[JSON.stringify(item)] = t.i18nTokens.join(' ');
+                } catch (e) {
+                    console.error(e);
+                }
+
+                // @ts-ignore
+                // if (t.strCount !== 0 && mat.type === 'shove')
+                //     console.log(JSON.stringify(t, null, 4));
             }
         }
+        console.log(map);
 
 
     } catch (e) {

@@ -283,18 +283,6 @@ function hook() {
     // ── （NativeFunction） ─────────────────────────────────────────
 
     const fs_register_func = new NativeFunction(findSymbol('fs_register_func'), 'int', ['pointer', 'pointer', 'pointer', 'int']);
-    /** @type {string[]} */
-    let fsFun = [];
-    Interceptor.attach(fs_register_func, {
-        onEnter(args) {
-            const funName = args[1].readCString();
-            if (funName)
-                fsFun.push(funName);
-        }
-    });
-
-
-    const repText = Memory.allocUtf8String(' ');
     let GAME_MARKER = false;
     const fs_get_int = new NativeFunction(findSymbol('fs_get_int'), 'int', ['pointer', 'int']);
     const fs_get_string = new NativeFunction(findSymbol('fs_get_string'), 'pointer', ['pointer', 'int']);
@@ -305,171 +293,44 @@ function hook() {
     const fs_get_token = new NativeFunction(findSymbol('fs_get_token'), 'pointer', ['pointer', 'int']);
     const fs_depth = new NativeFunction(findSymbol('fs_depth'), 'int', ['pointer']);
     const fs_get_type = new NativeFunction(findSymbol('fs_depth'), 'int', ['pointer', 'int']);
-    let vocPath = '';
-    Interceptor.attach(findSymbol('fs_voc_push'), {
-        onEnter(args) {
-            this.args = args;
-            try {
-                const s = fs_get_word_name(args[0], -1).readCString();
-                vocPath += s;
-                // info('fs_voc_push', vocPath);
-            } catch (e) {
-                error(e);
-            }
-        }
-    });
-    Interceptor.attach(findSymbol('fs_voc_pop'), {
-        onEnter(args) {
-            vocPath = vocPath.replace(/[^{]*\{[^{]*$/, '');
-            // info('fs_voc_pop', vocPath);
-        }
-    });
-    Interceptor.attach(findSymbol('fs_voc_clear'), {
-        onEnter(args) {
-            vocPath = '';
-        }
-    });
-    Interceptor.attach(findSymbol('fs_voc_clear_compile'), {
-        onEnter(args) {
-            vocPath = '';
-        }
-    });
 
-    const cyoa_is_active = new NativeFunction(findSymbol('cyoa_is_active'), 'bool', []);
+    const fs_get_float = new NativeFunction(findSymbol('fs_get_float'), 'double', ['pointer', 'int']);
+    const fs_remove = new NativeFunction(findSymbol('fs_remove'), 'int', ['pointer', 'int']);
+    const fs_push_string = new NativeFunction(findSymbol('fs_push_string'), 'int', ['pointer', 'pointer']);
 
-    var code = [{ s1: NULL, s2: NULL, s3: NULL, last_token: '' }];
-    var code_interpret_ = false;
-    var code_interpret_word_ = '';
-    var code_interpret_load_word_ = false;
-    var code_interpret_code_text_ = NULL;
-    var code_interpret_word_len_ = 0;
-    var centext = ['root']
-    Interceptor.attach(findSymbol('code_interpret'), {
+    /**
+     * 
+     * @type {string[]}
+     */
+    const i18nArgs = [];
+    Interceptor.attach(findSymbol('forth_init'), {
         onEnter(args) {
-            code_interpret_ = true;
-
-            const s1 = args[0].add(100).readPointer();
-            const s2 = args[0].add(104).readPointer();
-            const s3 = args[0].add(108).readPointer();
-            code_interpret_code_text_ = s3;
-
-            code.push({ s1: s1, s2: s2, s3: s3, last_token: 'last_token' });
+            this.a1 = args[0];
         },
         onLeave(retval) {
-            if (code_interpret_word_ === '($') {
-                centext.push('($');
-            }
-            if (code_interpret_word_ === '$)') {
-                if (centext.at(-1) === '($')
-                    centext.pop();
-                // else
-                //     throw new Error("($ not find");
-            }
+            fs_register_func(this.a1, L('i18n'), callback('i18n', () => {
+                // const f = fs_get_float(this.a1, -1);
 
-            if (code_interpret_word_ === 'choice(') {
-                centext.push('choice(');
-            }
-            if (code_interpret_word_ === ')choice' || code_interpret_word_ === ')choice:') {
-                if (centext.at(-1) === 'choice(')
-                    centext.pop();
-                // else
-                //     throw new Error("choice( not find");
-            }
-            // info('code_interpret', code_interpret_word_, code_interpret_load_word_, code_interpret_word_len_,args[1].readCString(args[2].toInt32()));
+                const src = (fs_get_string(this.a1, -1).readUtf8String() ?? '').replace(/[\uE000-\uE0FF]/g, c => String.fromCharCode(c.charCodeAt(0) & 0xFF));
+                const tokens = JSON.stringify(src.match(/"(?:[^"\\]|\\.)*"|\S+/g) || []);
 
-            code_interpret_ = false;
-            code_interpret_word_ = '';
-            code_interpret_load_word_ = false;
+                const s = readByteString(fs_get_string(this.a1, -2));
+                fs_remove(this.a1, 2);
+                fs_push_string(this.a1, L('i18n'))
+
+                i18nArgs.length = 0;
+                log('i18n', tokens, s);
+                return 0;
+            }), 0);
+
+            fs_register_func(this.a1, L('i18n.arg.push'), callback('i18n.arg.push', () => {
+                const s = readByteString(fs_get_string(this.a1, -1));
+                i18nArgs.push(s);
+                log('i18n.arg.push', i18nArgs.length, s);
+                return 0;
+            }), 0);
         }
     });
-    Interceptor.attach(findSymbol('compile_string'), {
-        onEnter(args) {
-            if (!code_interpret_) return;
-            const s = args[1].readCString(args[2].toInt32());
-            let after = args[1].add(args[2].toInt32() + 1).readCString(200) ?? '';
-            let nafter = after.match(/^[^\n"]*/)?.[0] ?? '';
-            let nsafter = after.match(/^[^\n"]*/)?.[0] ?? '';
-            
-            /** @type {string[]} */
-            const codes = after.match(/\S+/g) ?? [];
-            /** @type {string[]} */
-            const ncodes = nafter.match(/\S+/g) ?? [];
-            /** @type {string[]} */
-            const nscodes = nsafter.match(/\S+/g) ?? [];
-
-            // if (ncodes.indexOf('cyoa-title!') !== -1 || ncodes.indexOf('text!') !== -1 || after.indexOf('+crtext') !== -1 ||
-            
-            //     centext.at(-1) === 'choice(' || centext.at(-1) === '($' && vocPath.indexOf('locals{') === -1) {
-            //     info('code_interpret', vocPath, after);
-            //     info(s);
-            //     // info(args[1].readCString(10));
-            //     args[1] = repText;
-            //     args[2] = ptr(1);
-            // }
-            // if (codeList.indexOf('text!') !== -1) {
-            //     info('code_interpret',codeList.indexOf('text!'), vocPath, after);
-            //     info(s);
-            //     info(args[1].readCString(10));
-            //     args[1] = repText;
-            //     args[2] = ptr(1);
-            // }
-        },
-        onLeave(retval) {
-        }
-    });
-    Interceptor.attach(findSymbol('voc_get_word'), {
-        onEnter(args) {
-            if (!code_interpret_) return;
-            const s = args[1].readUtf8String(args[2].toInt32()) ?? '';
-            code_interpret_word_ = s;
-            code_interpret_word_len_ = args[2].toInt32();
-        },
-        onLeave(retval) {
-
-        }
-    });
-    Interceptor.attach(findSymbol('vm_load_word'), {
-        onEnter(args) {
-            if (!code_interpret_) return;
-            code_interpret_load_word_ = true;
-        },
-        onLeave(retval) {
-
-        }
-    });
-    Interceptor.attach(findSymbol('word_stranew'), {
-        onEnter(args) {
-            const s = fs_get_string(args[0], -1).readCString();
-            if (s === 'GAME-MARKER') {
-                GAME_MARKER = true;
-            }
-        }
-    });
-
-    // const nothing = Memory.allocUtf8String("1111");
-    // const fs_pop_string = new NativeFunction(findSymbol('fs_pop_string'), 'pointer', ['pointer']);
-    // Interceptor.attach(fs_pop_string, {
-    //     onEnter(args) {
-    //     },
-    //     onLeave(retval) {
-    //         const s = retval.readCString();
-    //         if (s && s.indexOf('Twitter/Facebook') !== -1) {
-    //             info('fs_pop_string', vocPath, s, this.returnAddress);
-    //         }
-    //     }
-    // });
-
-    // const fs_get_string = new NativeFunction(findSymbol('fs_get_string'), 'pointer', ['pointer', 'int']);
-    // Interceptor.attach(findSymbol('fs_get_string'), {
-    //     onEnter(args) {
-    //     },
-    //     onLeave(retval) {
-    //         const s = retval.readCString();
-    //         if (s && s.indexOf('Twitter/Facebook') !== -1) {
-    //             info('fs_get_string', vocPath, s, this.returnAddress);
-    //         }
-    //     }
-    // });
 
 
     const strlen = new NativeFunction(resolveExport('strlen'), 'size_t', ['pointer']);
