@@ -43,15 +43,7 @@ const args = parseArgs(process.argv);
 
 // ---------- 3. 栈操作定义 ----------
 
-/** @type {Object.<string, {arity: number, fn: Function}>} */
-const STACK_OPS = {
-    // 'bbold':   { arity: 1, fn: (s) => '{{bbold}}' + s },
-    '($': { arity: 0, fn: () => '' },
-    // @ts-ignore
-    '$)': { arity: 2, fn: (a, b) => a + b },
-    // @ts-ignore
-    '..': { arity: 2, fn: (a, b) => a + b },
-};
+
 
 // ---------- 4. 分词 ----------
 // 字符串字面量 或 非空白序列
@@ -86,43 +78,76 @@ function toTemplate(src) {
     const stack = [];
     const tokens = tokenize(src);
 
+    for (let index = 0; index < tokens.length; index++) {
 
-    tokens.forEach(
-
-        /**
-         * @param {*} tok 
-         * @param {*} index 
-         */
-        (tok, index) => {
-            // a) 字符串字面量 → 去引号压栈
-            if (tok.startsWith('"')) {
-                stack.push(tok.slice(1, -1));
-                strCount++;
-            }
-            // b) 已知操作符 → 从栈上取参数,执行,压回
-            else if (Object.prototype.hasOwnProperty.call(STACK_OPS, tok)) {
-                const { arity, fn } = STACK_OPS[tok];
-                if (stack.length < arity) {
-                    throw new Error(`栈下溢: ${tok} 需要 ${arity} 个参数, 当前栈: ${JSON.stringify(stack)}`);
+        /** @type {Object.<string, {arity: number, fn: Function}>} */
+        const STACK_OPS = {
+            // 'bbold':   { arity: 1, fn: (s) => '{{bbold}}' + s },
+            '($': {
+                arity: 0, fn: () => {
+                    stack.push('')
                 }
-                // 从栈顶取 arity 个,按原顺序传入(Python 里 pop 后再反转)
-                const args = stack.splice(stack.length - arity, arity);
-                stack.push(fn(...args));
-            }
-            // c) 带参调用 gstats{ key }(已注释,保留)
-            // else if (CALL_RE.test(tok)) {
-            //   const m = tok.match(CALL_RE);
-            //   stack.push(`{{${m[1]}:${m[2]}}}`);
+            },
+            '$)': {
+                arity: 2, fn: () => {
+                    if (stack.length === 0) {
+                        stack.push(``);
+                        stack.push(`%${varCount + 1}$s`);
+                        varCount++;
+                    }
+                    if (stack.length === 1) {
+                        stack.push(`%${varCount + 1}$s`);
+                        varCount++;
+                    }
+                    const args = stack.splice(stack.length - 2, 2);
+                    stack.push(args[0] + args[1]);
+                }
+            },
+            '..': {
+                arity: 2, fn: () => {
+                    if (stack.length === 0) {
+                        stack.push(``);
+                        stack.push(`%${varCount + 1}$s`);
+                        varCount++;
+                    }
+                    if (stack.length === 1) {
+                        stack.push(`%${varCount + 1}$s`);
+                        varCount++;
+                    }
+                    const args = stack.splice(stack.length - 2, 2);
+                    stack.push(args[0] + args[1]);
+                }
+            },
+            'if': {
+                arity: 0, fn: () => {
+                    while (tokens[index] !== 'then') {
+                        // console.log('if步进token', tokens[index])
+                        index += 1;
+                    }
+                    // index += 1;
+                }
+            },
+        };
+
+        const tok = tokens[index];
+        // a) 字符串字面量 → 去引号压栈
+        if (tok.startsWith('"')) {
+            stack.push(tok.slice(1, -1));
+            strCount++;
+        }
+        // b) 已知操作符 → 从栈上取参数,执行,压回
+        else if (Object.prototype.hasOwnProperty.call(STACK_OPS, tok)) {
+            const { arity, fn } = STACK_OPS[tok];
+            fn();
+        }
+        else {
+            // const prev = tokens[index - 1];
+            // if (prev === '..' || prev === '($') {
+            //     stack.push(`%${varCount + 1}$s`);
+            //     varCount++;
             // }
-            // d) 其他光秃秃的标识符 → 视前一个 token 决定是否当变量占位符压栈
-            else {
-                const prev = tokens[index - 1];
-                if (prev === '..' || prev === '($') {
-                    stack.push(`%${varCount + 1}$s`);
-                    varCount++;
-                }
-            }
-        });
+        }
+    }
 
     if (stack.length !== 1) {
         throw new Error(`栈未收敛, 剩余 ${stack.length} 项: ${JSON.stringify(stack)}, \ntokens: ${JSON.stringify(tokens)}, \nsrc: ${JSON.stringify(src)}`);
@@ -149,20 +174,20 @@ const XRegExp = require('xregexp');
  * @param {string} src 
  * @returns 
  */
-function findBlocks(src) {
-  // matchRecursive 返回的是“去掉定界符的内部内容”,
-  // 我们想要包含定界符的完整块,所以手动拼回去。
-  const inners = XRegExp.matchRecursive(
-    src,
-    '\\(\\$ ',          // 左定界符正则(注意双反斜杠)
-    ' \\$\\)',          // 右定界符正则
-    'g',
-    {
-      unbalanced: 'skip',   // 遇到不平衡时跳过,不抛错
-      escapeChar: '\\',     // 反斜杠转义(让 \$) 不当作定界符)
-    }
-  );
-  return inners.map(inner => '($ ' + inner + ' $)');
+function findTextBlocks(src) {
+    // matchRecursive 返回的是“去掉定界符的内部内容”,
+    // 我们想要包含定界符的完整块,所以手动拼回去。
+    const inners = XRegExp.matchRecursive(
+        src,
+        '\\(\\$ ',          // 左定界符正则(注意双反斜杠)
+        ' \\$\\)',          // 右定界符正则
+        'g',
+        {
+            unbalanced: 'skip',   // 遇到不平衡时跳过,不抛错
+            escapeChar: '\\',     // 反斜杠转义(让 \$) 不当作定界符)
+        }
+    );
+    return inners.map(inner => '($ ' + inner + ' $)');
 }
 
 dfFiles.forEach(file => {
@@ -172,15 +197,48 @@ dfFiles.forEach(file => {
     try {
         // @ts-ignore
         const content = fs.readFileSync(path.resolve(filePath), args.encoding);
-        const BLOCK_RE = /\(\$ [\s\S]*? \$\)/g;
-        const result = findBlocks(content);
+        const result = findTextBlocks(content);
+        const matchs = [{
+            type: '($',
+            result: findTextBlocks(content)
+        }, {
+            type: 'shove',
+            result: content.match(/"[^"]*?" shove/g) || []
+        }, {
+            type: 'choice(',
+            result: content.match(/choice\([\s\S]*?\)choice/g) || []
+        }, {
+            type: 'choice-card',
+            result: content.match(/""[^"]*?" \w?choice-card/g) || []
+        }, {
+            type: 'shove',
+            result: content.match(/"[^"]*?" shove/g) || []
+        }, {
+            type: 'shove',
+            result: content.match(/"[^"]*?" shove/g) || []
+        }, {
+            type: 'shove',
+            result: content.match(/"[^"]*?" shove/g) || []
+        }, {
+            type: 'shove',
+            result: content.match(/"[^"]*?" shove/g) || []
+        }, {
+            type: 'shove',
+            result: content.match(/"[^"]*?" shove/g) || []
+        }, {
+            type: 'shove',
+            result: content.match(/"[^"]*?" shove/g) || []
+        }]
         // console.log(result);
-        for (const item of result) {
-            const t = toTemplate(item);
-            // if (t.strCount !== 0)
-            //     console.log(JSON.stringify(t, null, 4));
+        for (const mat of matchs) {
+            for (const item of mat.result) {
+                const t = toTemplate(item);
+                if (t.strCount !== 0)
+                    console.log(JSON.stringify(t, null, 4));
+            }
         }
-        
+
+
     } catch (e) {
         console.error(`执行 ${file} 失败:`, e);
     }
