@@ -119,18 +119,14 @@ var LANG_STR = Object.fromEntries(
 )
 /** @param {string} iso639_1  */
 function loadLangEx(iso639_1) {
+    const path = mod.dir + '/assets/i18n/string literal/' + iso639_1 + '.json';
     try {
-        const langsDir = fs.readdirSync(mod.dir + '/assets/locale');
-        for (const langDir of langsDir) {
-            if (langDir === iso639_1) {
-                const s = File.readAllText(mod.dir + '/assets/locale/' + iso639_1 + '/LANG.json');
-                const o = JSON.parse(s);
-                LANG_STR = Object.fromEntries(
-                    Object.entries(o).map(([k, v]) => [k, allocMixedString(v)])
-                );
-                log('load lang.json', langDir, LANG_STR.length);
-            }
-        }
+        const s = File.readAllText(path);
+        const o = JSON.parse(s);
+        LANG_STR = Object.fromEntries(
+            Object.entries(o).map(([k, v]) => [k, allocMixedString(v)])
+        );
+        log('load lang', path, LANG_STR.length);
     } catch (e) {
         error('loadLangEx', e);
     }
@@ -261,6 +257,7 @@ function hook() {
         case 'OCT-15-2025.15.11':
             load_gfx = globalThis.mainModule.base.add(0xEE0FC);
             btn_music_slider = globalThis.mainModule.base.add(0x100F64);
+            layout_title = globalThis.mainModule.base.add(0xF06D8);
             log('main_build_stamp', build_stamp);
             break;
 
@@ -418,6 +415,12 @@ function hook() {
 
             if (!mods_init) {
                 mods_init = true;
+
+                try {
+                    mkdir(globalThis.modsDir)
+                } catch (e) {
+
+                }
 
                 const dirPath = globalThis.modsDir
 
@@ -934,15 +937,13 @@ function hookUtf8() {
     });
 
     // ── 使用MOD路径加载data ──────────────────────────────────────
-    /** @type {NativePointer} */
-    const assetsDir = Memory.allocUtf8String(mod.dir + '/assets/')
     let skip_path_rep = 0;
 
     Interceptor.attach(WRAPPER_FILE_DATA_PATH, {
         onLeave(retval) {
             if (skip_path_rep) return;
 
-            retval.replace(assetsDir);
+            retval.replace(L(mod.dir + '/assets/'));
         }
     });
 
