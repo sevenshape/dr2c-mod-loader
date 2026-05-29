@@ -1,9 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const JSZip = require('jszip');
-const pkg = require('./package.json');
+const pkg = require('../package.json');
 
-const OUT_FILE = path.resolve(__dirname, 'build/' + pkg.name + '-' + pkg.version + '.zip');
+const OUT_FILE = path.resolve(__dirname, '../', 'build/' + pkg.name + '-' + pkg.version + '.zip');
+const DIST_DIR = path.resolve(__dirname, '../', 'dist');
+const BUILD_DIR = path.resolve(__dirname, '../', 'build');
 
 /** @param {string} dirPath @returns {string[]} */
 function getAllFiles(dirPath) {
@@ -27,10 +29,10 @@ function getAllFiles(dirPath) {
 (async () => {
     const zip = new JSZip();
 
-    getAllFiles(path.resolve(__dirname, 'dist')).forEach(item => {
+    getAllFiles(DIST_DIR).forEach(item => {
 
         const stat = fs.statSync(item);
-        let zipPath = path.relative(path.resolve(__dirname, 'dist'), item);
+        let zipPath = path.relative(DIST_DIR, item);
         if (process.platform === 'win32') {
             zipPath = zipPath.replaceAll('\\', '/');
         }
@@ -49,7 +51,7 @@ function getAllFiles(dirPath) {
         compression: 'DEFLATE',
         compressionOptions: { level: 9 },
     });
-    fs.mkdirSync(path.resolve(__dirname, 'build'), { recursive: true });
+    fs.mkdirSync(BUILD_DIR, { recursive: true });
     fs.writeFileSync(OUT_FILE, buf);
     console.log(`[+] done: ${OUT_FILE} (${(buf.length / 1024 / 1024).toFixed(2)} MB)`);
 })();

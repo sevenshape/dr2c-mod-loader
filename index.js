@@ -56,6 +56,9 @@ globalThis.application;
 /** @type {*} */
 // @ts-ignore
 globalThis.applicationContext;
+/** @type {*} */
+// @ts-ignore
+globalThis.topActivity;
 
 // @ts-ignore
 if (typeof mod === 'undefined') {
@@ -210,6 +213,14 @@ function main() {
             globalThis.application = Java.use('android.app.ActivityThread').currentApplication();
             globalThis.applicationContext = globalThis.application.getApplicationContext();
             var externalDir = globalThis.applicationContext.getExternalFilesDir('');
+
+            Java.perform(() => {
+                const Activity = Java.use('android.app.Activity');
+                Activity.onResume.implementation = function () {
+                    globalThis.topActivity = this;
+                    this.onResume();
+                };
+            });
 
             if (externalDir != null) {
                 if (!mod.dir) {
@@ -416,12 +427,6 @@ function hook() {
             if (!mods_init) {
                 mods_init = true;
 
-                try {
-                    mkdir(globalThis.modsDir)
-                } catch (e) {
-
-                }
-
                 const dirPath = globalThis.modsDir
 
                 fs.readdirSync(dirPath).forEach(ele => {
@@ -571,11 +576,92 @@ function hook() {
             const btn_load = button_ex(1.0, 0.0, 0, L("Load mod from file"), main_btn_data_func);
             setOnClickListener(btn_load,
                 () => {
+
+                    function showProgressDialog() {
+                        const CLSID_ProgressDialog = '{F8383852-FCD3-11D1-A6B9-006097DF5BD4}';
+                        const IID_IProgressDialog = '{EBBC7C04-315E-11D2-B62F-006097DF5BD4}';
+
+                        // 加载 DLL
+                        Module.load('shell32.dll');
+                        Module.load('ole32.dll');
+
+                        // 获取函数
+                        const CoInitializeEx = new NativeFunction(
+                            findExportByName('ole32.dll', 'CoInitializeEx'),
+                            'int', ['pointer', 'uint32']
+                        );
+
+                        const CLSIDFromString = new NativeFunction(
+                            findExportByName('ole32.dll', 'CLSIDFromString'),
+                            'int', ['pointer', 'pointer']
+                        );
+
+                        const CoCreateInstance = new NativeFunction(
+                            findExportByName('ole32.dll', 'CoCreateInstance'),
+                            'int', ['pointer', 'pointer', 'uint32', 'pointer', 'pointer']
+                        );
+
+                        // 初始化 COM
+                        const hr = CoInitializeEx(NULL, 0x2);
+                        log('CoInitializeEx:', hr);
+
+                        // 转换 GUID
+                        const clsid = Memory.alloc(16);
+                        const iid = Memory.alloc(16);
+                        CLSIDFromString(Memory.allocUtf16String(CLSID_ProgressDialog), clsid);
+                        CLSIDFromString(Memory.allocUtf16String(IID_IProgressDialog), iid);
+
+                        // 创建实例 - 32位用4字节指针
+                        const ppv = Memory.alloc(4);
+                        const hr2 = CoCreateInstance(clsid, NULL, 1, iid, ppv);
+                        log('CoCreateInstance: 0x' + (hr2 >>> 0).toString(16));
+
+                        if (hr2 < 0) {
+                            throw new Error("Failed to create ProgressDialog");
+                        }
+
+                        // 获取对象指针
+                        const pObj = ppv.readPointer();
+                        const vtable = pObj.readPointer();
+
+                        const StartProgressDialog = new NativeFunction(
+                            vtable.add(12).readPointer(),  // 3 * 4 = 12
+                            'int', ['pointer', 'pointer', 'pointer', 'uint32', 'pointer']
+                        );
+
+                        const StopProgressDialog = new NativeFunction(
+                            vtable.add(16).readPointer(),  // 4 * 4 = 16
+                            'int', ['pointer']
+                        );
+
+                        const SetProgress = new NativeFunction(
+                            vtable.add(24).readPointer(),  // 6 * 4 = 24
+                            'int', ['pointer', 'uint32', 'uint32']
+                        );
+
+                        // 显示对话框
+                        StartProgressDialog(
+                            pObj,
+                            ptr(0),              // hwndParent
+                            ptr(0),              // punkEnableModeless
+                            0x00000020,          // 
+                            ptr(0)               // pvReserved
+                        );
+                        return () => { StopProgressDialog(pObj) };
+                    }
+
+
+                    /**
+                     * @type {(() => void)}
+                     */
+                    let stop;
+
                     const selectMod = async () => {
                         const path1 = await selzip();
                         log('选择', path1);
                         if (!path1) throw new Error("not select file");
 
+                        stop = showProgressDialog();
                         const data1 = File.readAllBytes(path1);
 
                         const zip = await JSZip.loadAsync(data1);
@@ -626,17 +712,19 @@ function hook() {
                         new NativeFunction(modLayout, 'int', [])();
                     };
 
-                    selectMod().catch(
-                        /**
-                         * @param {Error} e 
-                         */
-                        (e) => {
-                            error(e.stack);
-                            cyoa_just_ok(L('Invalid mod detected. error: ' + e.message));
-                            cyoa_set_title(L('LOAD MOD FAIL'));
+                    selectMod()
+                        .catch(
+                            /**
+                             * @param {Error} e 
+                             */
+                            (e) => {
+                                error(e.stack);
+                                cyoa_just_ok(L('Invalid mod detected. error: ' + e.stack));
+                                cyoa_set_title(L('LOAD MOD FAIL'));
 
-                            new NativeFunction(modLayout, 'int', [])();
-                        });
+                                new NativeFunction(modLayout, 'int', [])();
+                            })
+                        .finally(() => { stop ? stop() : null; });
 
 
                     return 1;
@@ -1493,7 +1581,8 @@ function waitForModule(moduleName, callback) {
     }
 
     // 2) hook android_dlopen_ext —— Android 7+ 加载 so 的真正入口
-    const dlopen_ext = Module.findGlobalExportByName('android_dlopen_ext');
+    // @ts-ignore
+    const dlopen_ext = Module.findExportByName ? Module.findExportByName(null, "android_dlopen_ext") : Module.findGlobalExportByName("android_dlopen_ext");
     if (dlopen_ext) {
         Interceptor.attach(dlopen_ext, {
             onEnter(args) {
@@ -1806,20 +1895,22 @@ function findExportByName(mod, fun) {
 function mkdir(path) {
 
     if (Process.platform === 'linux') {
-        var File = Java.use("java.io.File");
+        Java.perform(() => {
+            var File = Java.use("java.io.File");
 
-        var dir = File.$new(path);
+            var dir = File.$new(path);
 
-        if (!dir.exists()) {
-            var success = dir.mkdirs();  // mkdirs 会连同父目录一起创建
-            if (success) {
-                log("目录创建成功:", path);
+            if (!dir.exists()) {
+                var success = dir.mkdirs();  // mkdirs 会连同父目录一起创建
+                if (success) {
+                    log("目录创建成功:", path);
+                } else {
+                    throw new Error("目录创建失败: " + path);
+                }
             } else {
-                throw new Error("目录创建失败: " + path);
+                throw new Error("目录已存在: " + path);
             }
-        } else {
-            throw new Error("目录已存在: " + path);
-        }
+        })
         return;
     }
 

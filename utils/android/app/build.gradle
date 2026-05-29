@@ -1,0 +1,130 @@
+apply plugin: 'com.android.application'
+apply plugin: 'io.github.reactivecircus.app-versioning'
+
+appVersioning {
+    gitRootDirectory.set(rootProject.file("../"))   // .git 在 android/ 的上一级
+}
+
+android {
+    namespace = "top.sevenshape.dr2cmodloader"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "top.sevenshape.dr2cmodloader"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    buildFeatures {
+        buildConfig true
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+    compileOnly 'de.robv.android.xposed:api:82'
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
+
+// Frida Gadget 下载配置
+def fridaVersion = "17.9.11"
+def gadgetFileName = "frida-gadget-${fridaVersion}-android-arm64.so.xz"
+def gadgetUrl = "https://github.com/frida/frida/releases/download/${fridaVersion}/${gadgetFileName}"
+def jniLibsDir = "${projectDir}/src/main/jniLibs/arm64-v8a"
+def gadgetTargetFile = "${jniLibsDir}/libfrida-gadget.so"
+
+// 在配置阶段注册任务
+tasks.register('downloadFridaGadget') {
+    doLast {
+        def targetFile = file(gadgetTargetFile)
+
+        // 检查目标文件是否已存在
+        if (targetFile.exists()) {
+            println "Frida Gadget already exists at ${gadgetTargetFile}"
+            return
+        }
+
+        // 创建目标目录
+        def targetDir = file(jniLibsDir)
+        if (!targetDir.exists()) {
+            targetDir.mkdirs()
+            println "Created directory: ${jniLibsDir}"
+        }
+
+        // 下载 xz 压缩包
+        def compressedFile = new File(targetDir, gadgetFileName)
+        println "Downloading Frida Gadget from ${gadgetUrl}..."
+
+        new URL(gadgetUrl).withInputStream { input ->
+            compressedFile.withOutputStream { output ->
+                output << input
+            }
+        }
+
+        println "Downloaded to ${compressedFile.absolutePath}"
+
+        // 解压 xz 文件
+        println "Extracting ${gadgetFileName}..."
+        // 使用 Apache Commons Compress 解压
+        def xzClass = Class.forName('org.apache.commons.compress.compressors.xz.XZCompressorInputStream')
+        def inputFile = new FileInputStream(compressedFile)
+        def xzStream = xzClass.newInstance(inputFile)
+
+        targetFile.withOutputStream { output ->
+            output << xzStream
+        }
+        xzStream.close()
+        inputFile.close()
+
+        // 删除压缩包
+        compressedFile.delete()
+
+        // 设置可执行权限
+        targetFile.setExecutable(true)
+
+        println "Successfully extracted and saved to ${gadgetTargetFile}"
+    }
+}
+
+// 添加依赖确保下载在构建前执行
+tasks.whenTaskAdded { task ->
+    if (task.name == 'preBuild') {
+        task.dependsOn 'downloadFridaGadget'
+    }
+}

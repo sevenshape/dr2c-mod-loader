@@ -1,11 +1,16 @@
 *
 !.gitignore
-!index.js
 !jsconfig.json
 !package.json
 !package-lock.json
-!pack.js
+!capacitor.config.json
 
-!run.py
-!start_frida_hook.py
-!read_df_code.js
+!index.js
+!index.html
+!assets/
+!assets/**/*
+
+!utils/
+!utils/**/*
+
+/utils/android/app/src/main/jniLibs/arm64-v8a/libfrida-gadget.so

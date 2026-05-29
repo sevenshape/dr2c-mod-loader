@@ -11,12 +11,11 @@
     "postinstall": "pip install frida && pip install frida-tools",
     "which": "which frida-compile && frida-compile --version && which frida && frida --version",
     "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.mkdirSync('dist');fs.cpSync('assets','dist/assets',{recursive:true});fs.cpSync('index.js','dist/index.js');fs.cpSync('index.html','dist/index.html');fs.cpSync('package.json','dist/package.json');\" && frida-compile index.js -o dist/main.js",
-    "build:package": "npm run build && node pack.js",
-    "dev": "npm run build && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe",
-    "dev:2022": "npm run build && python run.py -t D:\\dr2c\\2022\\prog.exe",
-    "dev:package": "npm run build:package && python run.py -t D:\\program\\Steam\\steamapps\\common\\DeathRoadToCanada\\prog.exe",
-    "dev:android": "npm run build && python start_frida_hook.py com.noodlecake.drtc",
-    "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && python start_frida_hook.py com.noodlecake.drtc"
+    "build:package": "npm run build && node utils/pack.js",
+    "dev": "npm run build && python utils/run.py",
+    "dev:package": "npm run build:package && python utils/run.py",
+    "dev:android": "npm run build && python utils/run-android.py com.noodlecake.drtc",
+    "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && python utils/run-android.py com.noodlecake.drtc"
   },
   "devDependencies": {
     "@types/frida-gum": "^19.1.0",

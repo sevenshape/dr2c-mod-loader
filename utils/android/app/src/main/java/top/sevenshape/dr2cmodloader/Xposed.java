@@ -1,0 +1,135 @@
+package top.sevenshape.dr2cmodloader;
+
+import android.content.Context;
+import android.content.res.AssetManager;
+import android.content.res.XModuleResources;
+import android.os.Bundle;
+import android.util.Log;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+
+import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.IXposedHookZygoteInit;
+import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedHelpers;
+import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
+
+public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
+    @Override
+    public void handleLoadPackage(LoadPackageParam lpparam) {
+        log("load " + lpparam.packageName);
+        if (!lpparam.packageName.equals("com.noodlecake.drtc")) return;
+        // ... 后续逻辑
+
+        XModuleResources modRes = XModuleResources.createInstance(MODULE_PATH, null);
+        AssetManager xam = modRes.getAssets();
+
+        XposedHelpers.findAndHookMethod(
+                "com.noodlecake.drtc.DrtcGameActivity",
+                lpparam.classLoader,
+                "onCreate",
+                Bundle.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+
+                        Context ctx = (Context) param.thisObject;
+                        File modDir = ctx.getExternalFilesDir("");
+                        log("modDir: " + modDir.getAbsolutePath());
+
+                        try {
+                            File versionFile = new File(modDir, ".asset_version");
+                            String current = BuildConfig.VERSION_NAME;   // 跟着模块版本走
+
+                            if (versionFile.exists() && current.equals(readText(versionFile))) {
+                                log("skip execution to copyAssets");
+                            } else {
+                                Xposed.copyAssets(xam, "public", modDir);
+                                writeText(versionFile, current);
+                            }
+                        } catch (Exception e) {
+                            error("fail to copyAssets", e);
+                        } finally {
+                            log("execution end to copyAssets");
+                        }
+
+                        System.loadLibrary("frida-gadget");
+                        log("System.loadLibrary: frida-gadget");
+                    }
+                }
+        );
+
+        /*使用Application.attach作为入口时游戏闪退*/
+//        XposedHelpers.findAndHookMethod(
+//                Application.class, "attach", Context.class,
+//                new XC_MethodHook() {
+//                    @Override
+//                    protected void afterHookedMethod(MethodHookParam param) {
+//                        Context ctx = (Context) param.args[0];
+//                        File modDir = ctx.getExternalFilesDir("");
+//                    }
+//                }
+//        );
+    }
+
+    public static void copyAssets(AssetManager am, String assetPath, File destDir) throws IOException {
+        String[] children = am.list(assetPath);
+        if (children != null && children.length > 0) {
+            // 目录
+            if (!destDir.exists()) destDir.mkdirs();
+            for (String name : children) {
+                String childAsset = assetPath.isEmpty() ? name : assetPath + "/" + name;
+                copyAssets(am, childAsset, new File(destDir, name));
+            }
+        } else {
+            // 文件
+            File parent = destDir.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            try (InputStream in = am.open(assetPath);
+                 OutputStream out = new FileOutputStream(destDir)) {
+                byte[] buf = new byte[8192];
+                int len;
+                while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
+            }
+        }
+    }
+
+    String readText(File f) throws IOException {
+        try (FileInputStream in = new FileInputStream(f);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[1024];
+            int len;
+            while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
+            return out.toString("UTF-8");
+        }
+    }
+
+    void writeText(File f, String text) throws IOException {
+        try (FileOutputStream out = new FileOutputStream(f)) {
+            out.write(text.getBytes("UTF-8"));
+        }
+    }
+
+    public final String TAG = "Xposed";
+
+    public void log(String msg) {
+        Log.i(TAG, msg);
+    }
+
+    public void error(String msg, Throwable tr) {
+        Log.e(TAG, msg, tr);
+    }
+
+    private static String MODULE_PATH;
+
+    @Override
+    public void initZygote(IXposedHookZygoteInit.StartupParam startupParam) {
+        MODULE_PATH = startupParam.modulePath;
+    }
+}

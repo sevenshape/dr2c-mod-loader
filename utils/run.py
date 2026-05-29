@@ -12,121 +12,26 @@ import sys
 import struct
 import threading
 from pathlib import Path
-
+import winreg
+import re
 import frida
 
 sys.stdout.reconfigure(line_buffering=True)
 
+def find_game_dir(game="DeathRoadToCanada"):
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam")
+    steam_path = winreg.QueryValueEx(key, "SteamPath")[0]
+    winreg.CloseKey(key)
 
-# ── ELF 符号表解析 (支持 ELF32/ELF64, 大小端) ─────────────────────────────
-def parse_elf_symbols(elf_path):
-    with open(elf_path, "rb") as f:
-        data = f.read()
+    vdf = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
+    with open(vdf, encoding="utf-8") as f:
+        content = f.read()
 
-    if data[:4] != b"\x7fELF":
-        raise ValueError("不是 ELF 文件")
-
-    ei_class = data[4]            # 1=ELF32, 2=ELF64
-    ei_data  = data[5]            # 1=小端,  2=大端
-    endian   = "<" if ei_data == 1 else ">"
-    is_64    = (ei_class == 2)
-
-    # ── ELF Header ────────────────────────────────────────────────────
-    if is_64:
-        eh_fmt = endian + "HHIQQQIHHHHHH"
-        sym_entry_size = 24
-        # st_name(4), st_info(1), st_other(1), st_shndx(2), st_value(8), st_size(8)
-        sym_fmt = endian + "IBBHQQ"
-        # sh_name(4), sh_type(4), sh_flags(8), sh_addr(8), sh_offset(8),
-        # sh_size(8), sh_link(4), sh_info(4), sh_addralign(8), sh_entsize(8)
-        sh_fmt = endian + "IIQQQQIIQQ"
-    else:
-        eh_fmt = endian + "HHIIIIIHHHHHH"
-        sym_entry_size = 16
-        # st_name(4), st_value(4), st_size(4), st_info(1), st_other(1), st_shndx(2)
-        sym_fmt = endian + "IIIBBH"
-        sh_fmt  = endian + "IIIIIIIIII"
-
-    (e_type, e_machine, e_version, e_entry, e_phoff, e_shoff,
-     e_flags, e_ehsize, e_phentsize, e_phnum,
-     e_shentsize, e_shnum, e_shstrndx) = struct.unpack_from(eh_fmt, data, 16)
-
-    # ── Section Headers ───────────────────────────────────────────────
-    sections = []
-    for i in range(e_shnum):
-        off = e_shoff + i * e_shentsize
-        vals = struct.unpack_from(sh_fmt, data, off)
-        sections.append({
-            "name_off": vals[0],
-            "type":     vals[1],
-            "addr":     vals[3],
-            "offset":   vals[4],
-            "size":     vals[5],
-            "link":     vals[6],
-            "entsize":  vals[9],
-        })
-
-    # 解析 section 名称（位于 .shstrtab）
-    if 0 <= e_shstrndx < len(sections):
-        shstr_off = sections[e_shstrndx]["offset"]
-        for sec in sections:
-            try:
-                a = shstr_off + sec["name_off"]
-                end = data.index(b"\x00", a)
-                sec["name"] = data[a:end].decode("ascii", errors="replace")
-            except Exception:
-                sec["name"] = ""
-
-    SHT_SYMTAB = 2
-    SHT_DYNSYM = 11
-    SHN_UNDEF  = 0
-
-    symbols = {}
-
-    # 同时处理 .symtab (静态) 和 .dynsym (动态)。
-    # 若 .so 被 strip，.symtab 会缺失，.dynsym 一定存在。
-    for sec in sections:
-        if sec["type"] not in (SHT_SYMTAB, SHT_DYNSYM):
-            continue
-        if sec["link"] >= len(sections):
-            continue
-
-        strtab_off = sections[sec["link"]]["offset"]
-        ent_size   = sec["entsize"] or sym_entry_size
-        num_syms   = sec["size"] // ent_size
-        base_off   = sec["offset"]
-
-        for i in range(num_syms):
-            try:
-                sym_off = base_off + i * ent_size
-                vals = struct.unpack_from(sym_fmt, data, sym_off)
-                if is_64:
-                    st_name, st_info, st_other, st_shndx, st_value, st_size = vals
-                else:
-                    st_name, st_value, st_size, st_info, st_other, st_shndx = vals
-
-                if st_name == 0 or st_shndx == SHN_UNDEF or st_value == 0:
-                    continue
-
-                a = strtab_off + st_name
-                if a >= len(data):
-                    raise ValueError(f"st_name {st_name} 超出文件范围")
-                end = data.index(b"\x00", a)
-                name = data[a:end].decode("ascii", errors="replace")
-                if not name:
-                    continue
-
-                symbols[name] = st_value
-
-            except ValueError as e:
-                print(f"[WARN] ELF 符号 #{i} 名称解析失败: {e}，已跳过")
-            except struct.error as e:
-                print(f"[WARN] ELF 符号 #{i} 结构解析失败: {e}，已跳过")
-            except Exception as e:
-                print(f"[WARN] ELF 符号 #{i} 未知错误: {e}，已跳过")
-
-    return symbols
-
+    for path in re.findall(r'"path"\s+"(.+?)"', content):
+        target = os.path.join(path.replace("\\\\", "\\"), "steamapps", "common", game)
+        if os.path.isdir(target):
+            return target
+    return None
 
 # ── COFF 符号表解析 ──────────────────────────────────────────────────────────
 def parse_coff_symbols(pe_path):
@@ -218,12 +123,17 @@ def main():
     #     with open('PANCREAS JUN-20-2024.10.25_symbols.json', 'r', encoding='utf-8') as file:
     #         symbols = json.load(file)
     #     print(f"[WARN] 解析COFF失败, 改为使用json读取共 {len(symbols)} 个符号")
-
     
     parser = argparse.ArgumentParser(description="启动 frida-server 并可选 spawn + 注入 main.js")
-    parser.add_argument("-t", "--target", default=r"D:\dr2c\2024\prog.exe", help="注入的对象exe")
+    parser.add_argument("-t", "--target", help="注入的对象exe")
     parser.add_argument("-s", "--script", default="./dist/main.js", help="注入脚本路径(默认: ./dist/main.js)")
     args = parser.parse_args()
+
+    if not args.target:
+        gamedir = find_game_dir()
+        if not gamedir:
+            raise Exception("Fail to find game directory")
+        args.target = gamedir+'\\prog.exe'
 
     with open(args.script, "r", encoding="utf-8") as f:
         agent_source = f.read()
@@ -232,8 +142,6 @@ def main():
     device = frida.get_local_device()
     print(f"[*] 已连接: {device}")
     print(f"[*] script: {args.script}")
-
-    # copy_game_data()
 
     print(f"[*] spawn {args.target} ...")
     pid = device.spawn(args.target, cwd=os.path.dirname(args.target))
