@@ -25,10 +25,17 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
         }
     }
     buildFeatures {
         buildConfig true
+    }
+    // 在每个变体的预构建阶段执行
+    applicationVariants.all { variant ->
+        variant.preBuildProvider.configure {
+            dependsOn 'downloadFridaGadget'
+        }
     }
 }
 
@@ -119,12 +126,5 @@ tasks.register('downloadFridaGadget') {
         targetFile.setExecutable(true)
 
         println "Successfully extracted and saved to ${gadgetTargetFile}"
-    }
-}
-
-// 添加依赖确保下载在构建前执行
-tasks.whenTaskAdded { task ->
-    if (task.name == 'preBuild') {
-        task.dependsOn 'downloadFridaGadget'
     }
 }

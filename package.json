@@ -15,11 +15,19 @@
     "dev": "npm run build && python utils/run.py",
     "dev:package": "npm run build:package && python utils/run.py",
     "dev:android": "npm run build && python utils/run-android.py com.noodlecake.drtc",
-    "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && python utils/run-android.py com.noodlecake.drtc"
+    "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && python utils/run-android.py com.noodlecake.drtc",
+    "init:android": "npx cap add android && node -e \"const fs = require('fs-extra'); fs.copySync('utils/android', 'android', { overwrite: true });\"",
+    "build:apk": "cd android && gradlew assembleRelease && echo APK: ./android/app/build/outputs/apk/release/app-release.apk",
+    "build:apk:install": "cd android && gradlew installRelease",
+    "tag:dev": "node -e \"const ts = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(2, 14);require('child_process').execSync('cross-var git tag %npm_package_version%-dev.' + ts + ' -m \\\"dev build\\\"', {stdio: 'inherit'})\"",
+    "dev:apk": "npm run build && npx cap sync android && npm run tag:dev && npm run build:apk:install && adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed",
+    "dev:apk:reload": "adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed"
   },
   "devDependencies": {
     "@types/frida-gum": "^19.1.0",
-    "cross-var": "^1.1.0"
+    "cross-env": "^10.1.0",
+    "cross-var": "^1.1.0",
+    "fs-extra": "^11.3.5"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.4",

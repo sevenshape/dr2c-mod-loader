@@ -23,9 +23,9 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) {
+        if (!lpparam.packageName.equals("com.noodlecake.drtc"))
+            return;
         log("load " + lpparam.packageName);
-        if (!lpparam.packageName.equals("com.noodlecake.drtc")) return;
-        // ... 后续逻辑
 
         XModuleResources modRes = XModuleResources.createInstance(MODULE_PATH, null);
         AssetManager xam = modRes.getAssets();
@@ -45,7 +45,7 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                         try {
                             File versionFile = new File(modDir, ".asset_version");
-                            String current = BuildConfig.VERSION_NAME;   // 跟着模块版本走
+                            String current = BuildConfig.VERSION_NAME; // 跟着模块版本走
 
                             if (versionFile.exists() && current.equals(readText(versionFile))) {
                                 log("skip execution to copyAssets");
@@ -59,30 +59,22 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             log("execution end to copyAssets");
                         }
 
-                        System.loadLibrary("frida-gadget");
-                        log("System.loadLibrary: frida-gadget");
+                        try {
+                            System.loadLibrary("frida-gadget");
+                            log("✓ Frida Gadget loaded successfully");
+                        } catch (Exception e) {
+                            error("✗ Failed to load Frida Gadget: ", e);
+                        }
                     }
-                }
-        );
-
-        /*使用Application.attach作为入口时游戏闪退*/
-//        XposedHelpers.findAndHookMethod(
-//                Application.class, "attach", Context.class,
-//                new XC_MethodHook() {
-//                    @Override
-//                    protected void afterHookedMethod(MethodHookParam param) {
-//                        Context ctx = (Context) param.args[0];
-//                        File modDir = ctx.getExternalFilesDir("");
-//                    }
-//                }
-//        );
+                });
     }
 
     public static void copyAssets(AssetManager am, String assetPath, File destDir) throws IOException {
         String[] children = am.list(assetPath);
         if (children != null && children.length > 0) {
             // 目录
-            if (!destDir.exists()) destDir.mkdirs();
+            if (!destDir.exists())
+                destDir.mkdirs();
             for (String name : children) {
                 String childAsset = assetPath.isEmpty() ? name : assetPath + "/" + name;
                 copyAssets(am, childAsset, new File(destDir, name));
@@ -90,22 +82,25 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         } else {
             // 文件
             File parent = destDir.getParentFile();
-            if (parent != null && !parent.exists()) parent.mkdirs();
+            if (parent != null && !parent.exists())
+                parent.mkdirs();
             try (InputStream in = am.open(assetPath);
-                 OutputStream out = new FileOutputStream(destDir)) {
+                    OutputStream out = new FileOutputStream(destDir)) {
                 byte[] buf = new byte[8192];
                 int len;
-                while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
+                while ((len = in.read(buf)) > 0)
+                    out.write(buf, 0, len);
             }
         }
     }
 
     String readText(File f) throws IOException {
         try (FileInputStream in = new FileInputStream(f);
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buf = new byte[1024];
             int len;
-            while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
+            while ((len = in.read(buf)) > 0)
+                out.write(buf, 0, len);
             return out.toString("UTF-8");
         }
     }

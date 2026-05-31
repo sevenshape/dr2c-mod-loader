@@ -58,7 +58,7 @@ globalThis.application;
 globalThis.applicationContext;
 /** @type {*} */
 // @ts-ignore
-globalThis.topActivity;
+globalThis.activity;
 
 // @ts-ignore
 if (typeof mod === 'undefined') {
@@ -167,6 +167,20 @@ function loadLang() {
     }
 }
 
+function getActivity() {
+    if (!globalThis.activity)
+        Java.choose('com.noodlecake.drtc.DrtcGameActivity', {
+            onMatch: function (activity) {
+                log('找到 Activity 实例:', activity);
+                globalThis.activity = activity;
+            },
+            onComplete: function () {
+                log('Activity 实例搜索结束');
+            }
+        });
+    return globalThis.activity;
+}
+
 function main() {
     waitForModule('prog.exe',
         /**
@@ -214,13 +228,6 @@ function main() {
             globalThis.applicationContext = globalThis.application.getApplicationContext();
             var externalDir = globalThis.applicationContext.getExternalFilesDir('');
 
-            Java.perform(() => {
-                const Activity = Java.use('android.app.Activity');
-                Activity.onResume.implementation = function () {
-                    globalThis.topActivity = this;
-                    this.onResume();
-                };
-            });
 
             if (externalDir != null) {
                 if (!mod.dir) {
@@ -551,6 +558,7 @@ function hook() {
             const box = Memory.alloc(28 * 2);
             game_lower_box(box);
             button_set_layout(7.0, 1.0);
+
             const btn_l = button_ex(0.0, 0.0, -1, L("L"), main_btn_data_func);
             setOnClickListener(btn_l, () => {
                 modPage--;
@@ -572,12 +580,38 @@ function hook() {
                     return 1;
                 }
             );
+
             button_set_layout(3.0, 1.0);
-            const btn_load = button_ex(1.0, 0.0, 0, L("Load mod from file"), main_btn_data_func);
-            setOnClickListener(btn_load,
+            const btn_install = button_ex(1.0, 0.0, 0, L("Install Mod From File"), main_btn_data_func);
+            setOnClickListener(btn_install,
                 () => {
 
                     function showProgressDialog() {
+                        if (Process.platform === 'linux') {
+                            var ProgressDialog = Java.use('android.app.ProgressDialog');
+                            var String = Java.use('java.lang.String');
+
+                            // 使用 ApplicationContext（也是 Context）
+                            var dialog = ProgressDialog.show(
+                                getActivity(),
+                                String.$new('INSTALL MOD FROM FILE'),
+                                String.$new('LOADING'),
+                                true,   // indeterminate
+                                false,  // cancelable
+                                null    // cancel listener
+                            );
+
+                            function hideLoading() {
+                                Java.scheduleOnMainThread(function () {
+                                    if (dialog != null) {
+                                        dialog.dismiss();
+                                        dialog = null;
+                                    }
+                                });
+                            }
+
+                            return hideLoading;
+                        }
                         const CLSID_ProgressDialog = '{F8383852-FCD3-11D1-A6B9-006097DF5BD4}';
                         const IID_IProgressDialog = '{EBBC7C04-315E-11D2-B62F-006097DF5BD4}';
 
@@ -634,11 +668,6 @@ function hook() {
                             'int', ['pointer']
                         );
 
-                        const SetProgress = new NativeFunction(
-                            vtable.add(24).readPointer(),  // 6 * 4 = 24
-                            'int', ['pointer', 'uint32', 'uint32']
-                        );
-
                         // 显示对话框
                         StartProgressDialog(
                             pObj,
@@ -654,83 +683,107 @@ function hook() {
                     /**
                      * @type {(() => void)}
                      */
-                    let stop;
+                    let stopDialog;
 
-                    const selectMod = async () => {
+                    (async () => {
                         const path1 = await selzip();
                         log('选择', path1);
                         if (!path1) throw new Error("not select file");
 
-                        stop = showProgressDialog();
+                        stopDialog = showProgressDialog();
+
                         const data1 = File.readAllBytes(path1);
 
                         const zip = await JSZip.loadAsync(data1);
 
 
                         const fmod = zip.file('package.json');
-                        if (!fmod) throw new Error("Faild to find package.json");
-                        const s1 = await fmod.async('string');
+                        if (fmod) {
+                            if (!fmod) throw new Error("Failed to find package.json");
+                            const s1 = await fmod.async('string');
 
-                        /** @type {Mod} */
-                        const mod = JSON.parse(s1);
-                        if (!mod["name"]) throw new Error('package.json缺少name');
+                            /** @type {Mod} */
+                            const mod = JSON.parse(s1);
+                            if (!mod["name"]) throw new Error('Failed to find name property from package.json');
 
 
-                        const delMods = mods.filter(item => item.name === mod.name);
-                        for (const delMod of delMods) {
-                            rmrfSync(delMod.modDir);
-                        }
+                            const delMods = mods.filter(item => item.name === mod.name);
+                            for (const delMod of delMods) {
+                                rmrfSync(delMod.modDir);
+                            }
 
-                        const mdir = globalThis.modsDir + '/' + mod.name;
-                        mkdir(mdir);
+                            const mdir = globalThis.modsDir + '/' + mod.name;
+                            mkdir(mdir);
 
-                        File.writeAllText(`${mdir}/package.json`, s1);
-                        const jsfile = zip.file('index.js');
-                        if (jsfile)
-                            File.writeAllText(`${mdir}/index.js`, await jsfile.async('text'));
-                        for (const path of Object.keys(zip.files)) {
-                            const entry = zip.files[path];
-                            if (path.startsWith('assets/')) {
-                                if (entry.dir) {
-                                    mkdir(mdir + '/' + path.slice(0, -1));
-                                    log('📁 目录:', mdir + '/' + path.slice(0, -1));
-                                } else {
-                                    const data = await entry.async('array');
-                                    File.writeAllBytes(mdir + '/' + path, data);
-                                    log('📄 文件:', mdir + '/' + path);
+                            File.writeAllText(`${mdir}/package.json`, s1);
+                            const jsfile = zip.file('index.js');
+                            if (jsfile)
+                                File.writeAllText(`${mdir}/index.js`, await jsfile.async('text'));
+                            for (const path of Object.keys(zip.files)) {
+                                const entry = zip.files[path];
+                                if (path.startsWith('assets/')) {
+                                    if (entry.dir) {
+                                        mkdir(mdir + '/' + path.slice(0, -1));
+                                        log('📁 目录:', mdir + '/' + path.slice(0, -1));
+                                    } else {
+                                        const data = await entry.async('array');
+                                        File.writeAllBytes(mdir + '/' + path, data);
+                                        log('📄 文件:', mdir + '/' + path);
+                                    }
                                 }
                             }
+
+                            mods = mods.filter(item => item.name !== mod.name);
+                            mods.push(mod);
+                            mod.modDir = mdir;
+
+                            cyoa_just_ok(L('Install Mod Success.'));
+                            cyoa_set_title(L('SUCCESS'));
+                        } else {
+                            const tdir = mod.dir + '/assets/dr2c';
+                            
+                            rmrfSync(tdir);
+
+                            mkdir(tdir);
+
+                            for (const path of Object.keys(zip.files)) {
+                                const entry = zip.files[path];
+                                if (path.startsWith('data/')||path.startsWith('deathforth/')||path.startsWith('gfx/')) {
+                                    if (entry.dir) {
+                                        mkdir(tdir + '/' + path.slice(0, -1));
+                                        log('📁 目录:', tdir + '/' + path.slice(0, -1));
+                                    } else {
+                                        const data = await entry.async('array');
+                                        File.writeAllBytes(tdir + '/' + path, data);
+                                        log('📄 文件:', tdir + '/' + path);
+                                    }
+                                }
+                            }
+
+                            cyoa_just_ok(L('Install Mod Success.'));
+                            cyoa_set_title(L('SUCCESS'));
                         }
-
-                        mods = mods.filter(item => item.name !== mod.name);
-                        mods.push(mod);
-                        mod.modDir = mdir;
-
-                        cyoa_just_ok(L('Load mod success.'));
-                        cyoa_set_title(L('SUCCESS'));
-
-                        new NativeFunction(modLayout, 'int', [])();
-                    };
-
-                    selectMod()
+                    })()
                         .catch(
                             /**
                              * @param {Error} e 
                              */
                             (e) => {
                                 error(e.stack);
-                                cyoa_just_ok(L('Invalid mod detected. error: ' + e.stack));
-                                cyoa_set_title(L('LOAD MOD FAIL'));
-
-                                new NativeFunction(modLayout, 'int', [])();
+                                if (e.message !== 'No file selected') {
+                                    cyoa_just_ok(L('Invalid mod detected. error: ' + e.stack));
+                                    cyoa_set_title(L('INSTALL MOD FAIL'));
+                                }
                             })
-                        .finally(() => { stop ? stop() : null; });
+                        .finally(() => {
+                            stopDialog ? stopDialog() : null;
+                            new NativeFunction(modLayout, 'int', [])();
+                        });
 
-
-                    return 1;
+                    return 0;
                 }
             );
-            return 1;
+            return 0;
         },
         'uint',  // 返回值: LRESULT
         []
@@ -786,7 +839,7 @@ function hookUtf8() {
     const TURTLE_SET_SCALE = new NativeFunction(findSymbol('turtle_set_scale'), 'void', ['double']);
     const TURTLE_SET_SCALEX = new NativeFunction(findSymbol('turtle_set_scalex'), 'void', ['double']);
     const TURTLE_SET_SCALEY = new NativeFunction(findSymbol('turtle_set_scaley'), 'void', ['double']);
-    const GLYPHS_SET_CALLBACK = new NativeFunction(findSymbol('glyphs_set_callback'), 'int', ['pointer', 'int']);
+    const GLYPHS_SET_CALLBACK = new NativeFunction(findSymbol('glyphs_set_callback'), 'pointer', ['pointer', 'pointer']);
     const GLYPHS_BATCH_PLOT_EX = new NativeFunction(findSymbol('glyphs_batch_plot_ex'), 'int', ['pointer', 'pointer', 'int', 'int', 'int']);
     const ATLAS_CREATE_TEXTURE = new NativeFunction(findSymbol('atlas_create_texture'), 'int', ['int', 'int', 'int']);
     const ATLAS_FREE_IMAGE_DATA = new NativeFunction(findSymbol('atlas_free_image_data'), 'void', ['int']);
@@ -824,6 +877,8 @@ function hookUtf8() {
     // ── Replace glyphs_set_callback ───────────────────────────────────────
     Interceptor.replace(GLYPHS_SET_CALLBACK, new NativeCallback(
         (a1, a2) => {
+            if (!font_base_id) return GLYPHS_SET_CALLBACK(a1, a2);
+
             if (!a1.isNull()) {
                 originalGlyphCb = new NativeFunction(a1, 'int', ['int', 'int', 'pointer']);
             } else {
@@ -1031,7 +1086,7 @@ function hookUtf8() {
         onLeave(retval) {
             if (skip_path_rep) return;
 
-            retval.replace(L(mod.dir + '/assets/'));
+            retval.replace(L(mod.dir + '/assets/dr2c/'));
         }
     });
 
@@ -1039,7 +1094,7 @@ function hookUtf8() {
         onEnter(args) {
             const str = args[0].readCString();
             try {
-                const f = fs.readFileSync(mod.dir + '/assets/' + str);
+                const f = fs.statSync(mod.dir + '/assets/dr2c/' + str);
             } catch (e) {
                 /* 如果assets不存在对应文件则不替换 */
                 skip_path_rep = 1;
@@ -1054,7 +1109,7 @@ function hookUtf8() {
         onEnter(args) {
             const str = args[0].readCString();
             try {
-                const f = fs.readFileSync(mod.dir + '/assets/' + str);
+                const f = fs.statSync(mod.dir + '/assets/dr2c/' + str);
             } catch (e) {
                 /* 如果assets不存在对应文件则不替换 */
                 skip_path_rep = 1;
@@ -1447,11 +1502,11 @@ function setOnClickListenerEx(btn, funPtr) {
     }
     return btn;
 }
-/** @param {NativePointer} btn @param {NativeCallbackImplementation<number, []>} fun  @returns {NativePointer} */
+/** @param {NativePointer} btn @param {NativeCallbackImplementation<void, []>} fun  @returns {NativePointer} */
 function setOnClickListener(btn, fun) {
     const p = new NativeCallback(
         fun,
-        'uint',
+        'void',
         []
     );
     return setOnClickListenerEx(btn, p);
@@ -1772,18 +1827,16 @@ async function selzip() {
              */
             const promise = new Promise((resolve, reject) => {
                 /**
-             * Description placeholder
-             *
-             * @param {*} activity 
-             * @param {*} uri 
-             * @returns {*} 
-             */
+                * @param {*} activity 
+                * @param {*} uri 
+                * @returns {*} 
+                */
                 function dumpFromUri(activity, uri) {
                     var File = Java.use('java.io.File');
                     var FileOutputStream = Java.use('java.io.FileOutputStream');
 
                     var input = activity.getContentResolver().openInputStream(uri);
-                    if (input === null) { log('打不开'); return null; }
+                    if (input === null) { reject(new Error('Failed to openInputStream from dumpFromUri')); return null; }
 
                     var dst = File.$new(activity.getCacheDir(), 'sel.zip');
                     var fos = FileOutputStream.$new(dst);
@@ -1796,77 +1849,65 @@ async function selzip() {
                     return dst.getAbsolutePath();
                 }
 
-                Java.choose('com.noodlecake.drtc.DrtcGameActivity', {
-                    onMatch: function (activity) {
-                        log('找到 Activity 实例:', activity);
-                        /**
-                         * Description placeholder
-                         *
-                         * @type {*}
-                         */
-                        var originalOnActivityResult;
+                const activity = getActivity();
+                /** @type {*} */
+                var originalOnActivityResult;
 
-                        try {
-                            // 先尝试旧版本重载（3个参数）
-                            originalOnActivityResult = activity.onActivityResult.overload('int', 'int', 'android.content.Intent');
-                            log('[✓] 使用旧版 onActivityResult（3个参数）');
-                        } catch (e) {
-                            // 如果失败，尝试新版本重载（4个参数）
-                            try {
-                                originalOnActivityResult = activity.onActivityResult.overload('int', 'int', 'android.content.Intent', 'android.app.ComponentCaller');
-                                log('[✓] 使用新版 onActivityResult（4个参数）');
-                            } catch (e2) {
-                                log('[✗] 无法找到合适的 onActivityResult 重载');
-                                return;
+                try {
+                    // 先尝试旧版本重载（3个参数）
+                    originalOnActivityResult = activity.onActivityResult.overload('int', 'int', 'android.content.Intent');
+                    log('使用旧版 onActivityResult（3个参数）');
+                } catch (e) {
+                    // 如果失败，尝试新版本重载（4个参数）
+                    try {
+                        originalOnActivityResult = activity.onActivityResult.overload('int', 'int', 'android.content.Intent', 'android.app.ComponentCaller');
+                        log('使用新版 onActivityResult（4个参数）');
+                    } catch (e2) {
+                        error('无法找到合适的 onActivityResult 重载');
+                        reject(new Error('无法找到合适的 onActivityResult 重载'));
+                    }
+                }
+
+                // 替换实现
+                activity.onActivityResult.implementation =
+                    /**
+                     * @param {*} requestCode 
+                     * @param {*} resultCode 
+                     * @param {*} data 
+                     * @returns {*} 
+                     */
+                    function (requestCode, resultCode, data) {
+                        if (requestCode === 1234) {
+                            if (resultCode === Activity.RESULT_OK.value && data !== null) {
+                                var uri = data.getData();
+                                log('\n========== 文件选择结果 ==========');
+                                log('Uri:', uri.toString());
+                                log('路径:', uri.getPath());
+
+                                const modDir = dumpFromUri(activity, uri);
+                                resolve(modDir);
+                                log('===================================\n');
+                            } else {
+                                log('用户取消了选择');
+                                reject(new Error('No file selected'));
                             }
                         }
 
-                        // 替换实现
-                        activity.onActivityResult.implementation =
-                            /**
-                             * @param {*} requestCode 
-                             * @param {*} resultCode 
-                             * @param {*} data 
-                             * @returns {*} 
-                             */
-                            function (requestCode, resultCode, data) {
-                                if (requestCode === 1234) {
-                                    if (resultCode === Activity.RESULT_OK.value && data !== null) {
-                                        var uri = data.getData();
-                                        log('\n========== 文件选择结果 ==========');
-                                        log('Uri:', uri.toString());
-                                        log('路径:', uri.getPath());
+                        // 调用原始方法
+                        return originalOnActivityResult.call(this, requestCode, resultCode, data);
+                    };
+                log('onActivityResult Hook 成功');
 
-                                        const modDir = dumpFromUri(activity, uri);
-                                        resolve(modDir);
-                                        log('===================================\n');
-                                    } else {
-                                        log('用户取消了选择');
-                                        reject('close select');
-                                    }
-                                }
+                // ========== 2. 然后打开文件选择器 ==========
+                var intent = Intent.$new();
+                intent.setAction(Intent.ACTION_GET_CONTENT.value);
+                intent.setType('application/zip');
+                intent.addCategory(Intent.CATEGORY_OPENABLE.value);
 
-                                // 调用原始方法
-                                return originalOnActivityResult.call(this, requestCode, resultCode, data);
-                            };
-                        log('[✓] onActivityResult Hook 成功');
-
-                        // ========== 2. 然后打开文件选择器 ==========
-                        var intent = Intent.$new();
-                        intent.setAction(Intent.ACTION_GET_CONTENT.value);
-                        intent.setType('application/zip');
-                        intent.addCategory(Intent.CATEGORY_OPENABLE.value);
-
-                        activity.startActivityForResult(intent, 1234);
-                        log('[✓] 文件选择器已打开');
-                    },
-                    onComplete: function () {
-                        log('Activity 实例搜索结束');
-                    }
-                });
+                activity.startActivityForResult(intent, 1234);
+                log('文件选择器已打开');
             });
 
-            log('promise');
             const result = await promise;
             return result;
         }
@@ -1933,11 +1974,9 @@ function mkdir(path) {
 function rmrfSync(target) {
     let st;
     try {
-        st = fs.lstatSync(target);     // 注意是 lstat,不是 stat
+        st = fs.statSync(target);     // 注意是 lstat,不是 stat
     } catch (e) {
-        // @ts-ignore
-        if (e.code === 'ENOENT') return;   // 不存在就当成功
-        throw e;
+        return; /* 不存在就成功 */
     }
 
     // 符号链接(即使指向目录)也按文件删,绝对不能递归进去
