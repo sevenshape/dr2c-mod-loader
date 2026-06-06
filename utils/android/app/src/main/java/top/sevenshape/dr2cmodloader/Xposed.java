@@ -44,7 +44,7 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         log("modDir: " + modDir.getAbsolutePath());
 
                         try {
-                            File versionFile = new File(modDir, ".asset_version");
+                            File versionFile = new File(modDir, "build_timestamp.txt");
                             String current = BuildConfig.VERSION_NAME; // 跟着模块版本走
 
                             if (versionFile.exists() && current.equals(readText(versionFile))) {

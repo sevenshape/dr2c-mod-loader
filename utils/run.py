@@ -15,8 +15,11 @@ from pathlib import Path
 import winreg
 import re
 import frida
+import shutil
+import filecmp
 
-sys.stdout.reconfigure(line_buffering=True)
+if sys.stdout is not None:
+    sys.stdout.reconfigure(line_buffering=True)
 
 def find_game_dir(game="DeathRoadToCanada"):
     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam")
@@ -32,6 +35,26 @@ def find_game_dir(game="DeathRoadToCanada"):
         if os.path.isdir(target):
             return target
     return None
+
+def files_equal(path1, path2):
+    try:
+        with open(path1, 'r', encoding='utf-8') as f1:
+            with open(path2, 'r', encoding='utf-8') as f2:
+                return f1.read() == f2.read()
+    except FileNotFoundError:
+        return False
+
+def copy_resources_to(target_dir):
+    """将打包的资源从临时目录拷贝到目标目录"""
+    if getattr(sys, 'frozen', False):
+        source_dir = os.path.join(sys._MEIPASS, 'dr2c-mod-loader')
+    else:
+        source_dir = os.path.abspath("./dist")
+
+    d = os.path.join(target_dir, 'dr2c-mod-loader')
+
+    if not files_equal(os.path.join(source_dir,'build_timestamp.txt'),os.path.join(d,'build_timestamp.txt')):
+        shutil.copytree(source_dir, d, dirs_exist_ok=True)
 
 # ── COFF 符号表解析 ──────────────────────────────────────────────────────────
 def parse_coff_symbols(pe_path):
@@ -105,6 +128,7 @@ def on_message(message, data):
         print("[agent]", message["payload"])
     elif message["type"] == "error":
         print("[error]", message["stack"])
+        raise RuntimeError(f"[Frida Error] {message.get('description', '')}\n{message.get('stack', '')}")
     else:
         print("[msg]", message)
 
@@ -127,13 +151,31 @@ def main():
     parser = argparse.ArgumentParser(description="启动 frida-server 并可选 spawn + 注入 main.js")
     parser.add_argument("-t", "--target", help="注入的对象exe")
     parser.add_argument("-s", "--script", default="./dist/main.js", help="注入脚本路径(默认: ./dist/main.js)")
+    parser.add_argument("-i", "--inject", action='store_true', default=getattr(sys, 'frozen', False), help="将文件注入游戏目录并使用该目录下的脚本")
     args = parser.parse_args()
 
     if not args.target:
-        gamedir = find_game_dir()
-        if not gamedir:
-            raise Exception("Fail to find game directory")
-        args.target = gamedir+'\\prog.exe'
+        if os.path.exists('prog.exe'): 
+            args.target = '.\\prog.exe'
+        else:
+            gamedir = find_game_dir()
+            if not gamedir:
+                raise Exception("Fail to find game directory")
+            args.target = gamedir+'\\prog.exe'
+        print('[*] fill args.target',args.target)
+
+    if args.inject:
+        if os.path.exists('prog.exe'): 
+            copy_resources_to('.\\')
+            args.script = '.\\dr2c-mod-loader\\main.js'
+            print('[*] inject','.\\','args.script',args.script)
+        else:
+            gamedir = find_game_dir()
+            if not gamedir:
+                raise Exception("Fail to find game directory")
+            copy_resources_to(gamedir)
+            args.script = gamedir+'\\dr2c-mod-loader\\main.js'
+            print('[*] inject',gamedir,'args.script',args.script)
 
     with open(args.script, "r", encoding="utf-8") as f:
         agent_source = f.read()
