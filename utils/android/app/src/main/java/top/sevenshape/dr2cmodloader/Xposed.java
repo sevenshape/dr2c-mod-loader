@@ -58,6 +58,8 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         } finally {
                             log("execution end to copyAssets");
                         }
+                        
+                        log("if an exception occurs case reinstall dr2c apk");
 
                         try {
                             System.loadLibrary("frida-gadget");

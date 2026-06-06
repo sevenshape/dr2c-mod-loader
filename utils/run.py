@@ -27,8 +27,7 @@ def find_game_exe():
 
         for path in re.findall(r'"path"\s+"(.+?)"', content):
             target = os.path.join(path.replace("\\\\", "\\"), "steamapps", "common", "DeathRoadToCanada","prog.exe")
-            if os.path.isdir(target):
-                return target
+            return target
     if sys.platform == "linux":
         return "~/.steam/steam/steamapps/common/DeathRoadToCanada/prog-linux"
     return None

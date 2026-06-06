@@ -69,7 +69,7 @@ globalThis.applicationContext;
 globalThis.activity;
 
 try {
-    if (Module.findGlobalExportByName('android_log_print')) {
+    if (Process.getModuleByName('liblog.so')) {
         globalThis.isAndroid = true;
     } else {
         globalThis.isAndroid = false;
@@ -224,73 +224,77 @@ function main() {
         if (!globalThis.modsDir) {
             globalThis.modsDir = mod.dir + '/mods';
             const modsScript = loadMods(modsDir);
-            log(modsScript.length);
             if (modsScript.length === 0) {
+                loadLang();
                 hook();
                 hookUtf8();
             }
 
         } else {
+            loadLang();
             hook();
             hookUtf8();
         }
     }
-    waitForModule('prog.exe',
-        /**
-         * @param {Module} module 
-         */
-        function (module) {
-            SYMBOLS['main_trigger_event'] = findSymbol('main_trigger_event').add(0x240).toString();
-            SYMBOLS['main_tabscreen_start'] = findSymbol('main_tabscreen_start').add(0x240).toString();
-            SYMBOLS['main_push_popup_state'] = findSymbol('main_push_popup_state').add(0x240).toString();
 
-            SYMBOLS['main_tabscreen_reset'] = findSymbol('main_tabscreen_reset').add(0x240).toString();
-            SYMBOLS['main_tabscreen_add_tab'] = findSymbol('main_tabscreen_add_tab').add(0x240).toString();
-            SYMBOLS['main_tabscreen_layout_ex'] = findSymbol('main_tabscreen_layout_ex').add(0x240).toString();
-            SYMBOLS['main_tabscreen_set_exitfunc'] = findSymbol('main_tabscreen_set_exitfunc').add(0x240).toString();
+    if (Process.platform === 'windows')
+        waitForModule('prog.exe',
+            /**
+             * @param {Module} module 
+             */
+            function (module) {
+                SYMBOLS['main_trigger_event'] = findSymbol('main_trigger_event').add(0x240).toString();
+                SYMBOLS['main_tabscreen_start'] = findSymbol('main_tabscreen_start').add(0x240).toString();
+                SYMBOLS['main_push_popup_state'] = findSymbol('main_push_popup_state').add(0x240).toString();
 
-            SYMBOLS['main_tabscreen_tabbox_shrink'] = findSymbol('main_tabscreen_tabbox_shrink').add(0x240).toString();
-            SYMBOLS['layout_for_news'] = findSymbol('layout_for_news').add(0x240).toString();
+                SYMBOLS['main_tabscreen_reset'] = findSymbol('main_tabscreen_reset').add(0x240).toString();
+                SYMBOLS['main_tabscreen_add_tab'] = findSymbol('main_tabscreen_add_tab').add(0x240).toString();
+                SYMBOLS['main_tabscreen_layout_ex'] = findSymbol('main_tabscreen_layout_ex').add(0x240).toString();
+                SYMBOLS['main_tabscreen_set_exitfunc'] = findSymbol('main_tabscreen_set_exitfunc').add(0x240).toString();
 
-            main_body(module);
-        });
-
-    waitForModule('libmain.so',
-        /**
-         * @param {Module} module 
-         */
-        function (module) {
-            globalThis.application = Java.use('android.app.ActivityThread').currentApplication();
-            globalThis.applicationContext = globalThis.application.getApplicationContext();
-            var externalDir = globalThis.applicationContext.getExternalFilesDir('');
+                SYMBOLS['main_tabscreen_tabbox_shrink'] = findSymbol('main_tabscreen_tabbox_shrink').add(0x240).toString();
+                SYMBOLS['layout_for_news'] = findSymbol('layout_for_news').add(0x240).toString();
+                SYMBOLS['_strlen'] = findSymbol('_strlen').add(0x240).toString();
 
 
-            if (externalDir != null) {
-                if (!mod.dir) {
-                    mod.dir = externalDir.getAbsolutePath();
+                main_body(module);
+            });
+
+    if (Process.platform === 'linux' && isAndroid)
+        waitForModule('libmain.so',
+            /**
+             * @param {Module} module 
+             */
+            function (module) {
+                globalThis.application = Java.use('android.app.ActivityThread').currentApplication();
+                globalThis.applicationContext = globalThis.application.getApplicationContext();
+                var externalDir = globalThis.applicationContext.getExternalFilesDir('');
+
+
+                if (externalDir != null) {
+                    if (!mod.dir) {
+                        mod.dir = externalDir.getAbsolutePath();
+                    }
+                } else {
+                    throw new Error("Failed get to mods dir");
                 }
-            } else {
-                throw new Error("Failed get to mods dir");
-            }
 
-            main_body(module);
-        });
+                main_body(module);
+            });
 
 
-    waitForModule('prog-linux',
-        /**
-         * @param {Module} module 
-         */
-        function (module) {
-            main_body(module);
-        });
+    if (Process.platform === 'linux' && !isAndroid)
+        waitForModule('prog-linux',
+            /**
+             * @param {Module} module 
+             */
+            function (module) {
+                main_body(module);
+            });
 }
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 function hook() {
-
-    loadLang();
-
     // ── 适配不同的build_stamp ─────────────────────────────────────────
     const main_build_stamp = new NativeFunction(findSymbol('main_build_stamp'), 'pointer', []);
     const build_stamp = main_build_stamp().readCString();
@@ -638,6 +642,7 @@ function hook() {
                     if (!path1) return;
 
                     cyoa_just_ok(L('Install Mod Working.'));
+                    cyoa_set_title(L('WAITING'));
 
                     try {
                         const data1 = File.readAllBytes(path1);
@@ -1560,8 +1565,8 @@ function waitForModule(moduleName, callback) {
     }
 
     // 2) hook android_dlopen_ext —— Android 7+ 加载 so 的真正入口
-    // @ts-ignore
-    const dlopen_ext = Module.findExportByName ? Module.findExportByName(null, "android_dlopen_ext") : Module.findGlobalExportByName("android_dlopen_ext");
+
+    const dlopen_ext = Module.findGlobalExportByName("android_dlopen_ext");
     if (dlopen_ext) {
         Interceptor.attach(dlopen_ext, {
             onEnter(args) {
