@@ -8,14 +8,13 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "postinstall": "pipx install -v frida-tools",
     "which": "which frida-compile && frida-compile --version && which frida && frida --version",
     "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.mkdirSync('dist');fs.cpSync('assets','dist/assets',{recursive:true});fs.cpSync('index.js','dist/index.js');fs.cpSync('index.html','dist/index.html');fs.cpSync('package.json','dist/package.json');\" && frida-compile index.js -o dist/main.js",
     "build:package": "npm run build && node utils/pack.js",
-    "dev": "npm run build && python3 utils/run.py",
-    "dev:package": "npm run build:package && python3 utils/run.py",
-    "dev:android": "npm run build && python3 utils/run-android.py com.noodlecake.drtc",
-    "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && python3 utils/run-android.py com.noodlecake.drtc",
+    "dev": "npm run build && node utils/run.js",
+    "dev:package": "npm run build:package && node utils/run.js",
+    "dev:android": "npm run build && node utils/run-android.js com.noodlecake.drtc",
+    "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && node utils/run-android.js com.noodlecake.drtc",
     "init:android": "npx cap add android && node -e \"const fs = require('fs-extra'); fs.copySync('utils/android', 'android', { overwrite: true });\"",
     "build:apk": "cd android && gradlew assembleRelease && echo APK: ./android/app/build/outputs/apk/release/app-release.apk",
     "build:apk:install": "cd android && gradlew installRelease",
@@ -32,12 +31,14 @@
   "dependencies": {
     "@capacitor/android": "^8.3.4",
     "@capacitor/cli": "^8.3.4",
+    "commander": "^15.0.0",
+    "frida": "^17.11.0",
     "frida-fs": "^7.0.0",
     "frida-java-bridge": "^7.0.13",
-    "i18next": "^26.2.0",
     "jszip": "^3.10.1",
     "lzma-native": "^8.0.6",
     "undici": "^8.3.0",
+    "winreg": "^1.2.5",
     "xregexp": "^5.1.2"
   }
 }
