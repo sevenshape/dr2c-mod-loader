@@ -100,6 +100,12 @@ if (typeof mod === 'undefined') {
                 }
             }
             break;
+        case 'darwin':
+            var mod = {
+                dir: Process.mainModule.path.substring(0, Process.mainModule.path.lastIndexOf('/')),
+                script: ''
+            }
+            break;
         default:
             throw new Error("Failed to get mod dir");
             break;
@@ -137,26 +143,38 @@ function loadMods(modsDir) {
     return modsScript;
 }
 
+var START = '\uE0F5\uE0FB\uE0E7\uE0F0\uE0FC  START  \uE0F5\uE0FB\uE0E7\uE0FC';
 /** @type {{ [key: string]: NativePointer }} */
 var LANG_STR = Object.fromEntries(
     Object.entries({}).map(([k, v]) => [k, allocMixedString(v)])
 )
 /** @param {string} iso639_1  */
-function loadLangEx(iso639_1) {
-    const path = mod.dir + '/assets/i18n/string literal/' + iso639_1 + '.json';
+function loadLangEx(iso639_1, override = false) {
+    const path = mod.dir + '/assets/lang.json';
     try {
         const s = File.readAllText(path);
         const o = JSON.parse(s);
+        if (!o['selected_lang'] || override) o['selected_lang'] = iso639_1;
         LANG_STR = Object.fromEntries(
-            Object.entries(o).map(([k, v]) => [k, allocMixedString(v)])
+            Object.entries(o['string_literal'][o['selected_lang']]).map(([k, v]) => [k, allocMixedString(v)])
         );
+
+        const file = new File(path, 'w');
+        file.write(JSON.stringify(o, null, 4));
+        file.close();
+
         log('load lang', path, LANG_STR.length);
     } catch (e) {
         error('loadLangEx', e);
     }
+
+
+    if (!LANG_STR[START]) {
+        LANG_STR[START] = allocMixedString(START);
+    }
 }
 function loadLang() {
-    if (Process.platform === 'linux') {
+    if (Process.platform === 'linux' || Process.platform === 'darwin') {
         if (isAndroid) {
             Java.perform(function () {
                 var Locale = Java.use('java.util.Locale');
@@ -219,7 +237,7 @@ function main() {
     function main_body(module) {
         info('module loaded @ ' + module.base + ' size=' + module.size);
         globalThis.mainModule = module;
-        info(Process.mainModule.path, globalThis.modsDir, mod.dir);
+        info('mod path:', Process.mainModule.path, globalThis.modsDir, mod.dir);
 
         if (!globalThis.modsDir) {
             globalThis.modsDir = mod.dir + '/mods';
@@ -291,153 +309,42 @@ function main() {
             function (module) {
                 main_body(module);
             });
+
+
+    if (Process.platform === 'darwin')
+        waitForModule('DR2C',
+            /**
+             * @param {Module} module 
+             */
+            function (module) {
+                main_body(module);
+            });
 }
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 function hook() {
-    // ── 适配不同的build_stamp ─────────────────────────────────────────
-    const main_build_stamp = new NativeFunction(findSymbol('main_build_stamp'), 'pointer', []);
-    const build_stamp = main_build_stamp().readCString();
-
-    /** @type {NativePointer} */
-    let load_gfx;
-    /** @type {NativePointer} */
-    let btn_music_slider;
-    /** @type {NativePointer} */
-    let layout_title;
-
-
-    log('main_build_stamp', build_stamp);
-    switch (build_stamp) {
-        case 'OCT-15-2025.15.11':
-            load_gfx = globalThis.mainModule.base.add(0xEE0FC);
-            btn_music_slider = globalThis.mainModule.base.add(0x100F64);
-            layout_title = globalThis.mainModule.base.add(0xF06D8);
-            break;
-
-        case 'MAY-04-2023.09.30':
-            load_gfx = globalThis.mainModule.base.add(0xB07D4);
-            btn_music_slider = globalThis.mainModule.base.add(0xC4D98);
-            layout_title = globalThis.mainModule.base.add(0xB4C28);
-            break;
-
-        case 'SEP-28-2022.14.11':
-            load_gfx = findSymbol('load_gfx');
-            btn_music_slider = findSymbol('btn_music_slider');
-            layout_title = mainModule.base.add(0x982F0);
-            break;
-
-        default:
-            load_gfx = findSymbol('load_gfx');
-            btn_music_slider = findSymbol('btn_music_slider');
-            layout_title = findSymbol('layout_for_news');
-            break;
-    }
-
-
-    // ── （NativeFunction） ─────────────────────────────────────────
-
-    const fs_register_func = new NativeFunction(findSymbol('fs_register_func'), 'int', ['pointer', 'pointer', 'pointer', 'int']);
-    let GAME_MARKER = false;
-    const fs_get_int = new NativeFunction(findSymbol('fs_get_int'), 'int', ['pointer', 'int']);
-    const fs_get_string = new NativeFunction(findSymbol('fs_get_string'), 'pointer', ['pointer', 'int']);
-    const fs_get_word_name = new NativeFunction(findSymbol('fs_get_word_name'), 'pointer', ['pointer', 'int']);
-    const fs_stack_depth = new NativeFunction(findSymbol('fs_stack_depth'), 'pointer', ['pointer', 'int']);
-    const fs_stack_size = new NativeFunction(findSymbol('fs_stack_size'), 'pointer', ['pointer', 'int']);
-    const fs_get_last_token = new NativeFunction(findSymbol('fs_get_last_token'), 'pointer', ['pointer']);
-    const fs_get_token = new NativeFunction(findSymbol('fs_get_token'), 'pointer', ['pointer', 'int']);
-    const fs_depth = new NativeFunction(findSymbol('fs_depth'), 'int', ['pointer']);
-    const fs_get_type = new NativeFunction(findSymbol('fs_depth'), 'int', ['pointer', 'int']);
-
-    const fs_get_float = new NativeFunction(findSymbol('fs_get_float'), 'double', ['pointer', 'int']);
-    const fs_remove = new NativeFunction(findSymbol('fs_remove'), 'int', ['pointer', 'int']);
-    const fs_push_string = new NativeFunction(findSymbol('fs_push_string'), 'int', ['pointer', 'pointer']);
-
-    /**
-     * 
-     * @type {string[]}
-     */
-    const i18nArgs = [];
-    Interceptor.attach(findSymbol('forth_init'), {
-        onEnter(args) {
-            this.a1 = args[0];
-        },
-        onLeave(retval) {
-            fs_register_func(this.a1, L('i18n'), callback('i18n', () => {
-                // const f = fs_get_float(this.a1, -1);
-
-                const src = (fs_get_string(this.a1, -1).readUtf8String() ?? '').replace(/[\uE000-\uE0FF]/g, c => String.fromCharCode(c.charCodeAt(0) & 0xFF));
-                const tokens = JSON.stringify(src.match(/"(?:[^"\\]|\\.)*"|\S+/g) || []);
-
-                const s = readByteString(fs_get_string(this.a1, -2));
-                fs_remove(this.a1, 2);
-                fs_push_string(this.a1, L('i18n'))
-
-                i18nArgs.length = 0;
-                log('i18n', tokens, s);
-                return 0;
-            }), 0);
-
-            fs_register_func(this.a1, L('i18n.arg.push'), callback('i18n.arg.push', () => {
-                const s = readByteString(fs_get_string(this.a1, -1));
-                i18nArgs.push(s);
-                log('i18n.arg.push', i18nArgs.length, s);
-                return 0;
-            }), 0);
-        }
-    });
-
     const button_ex = new NativeFunction(findSymbol('button_ex'), 'pointer', ['float', 'float', 'int', 'pointer', 'pointer']);
-    if (Process.platform === 'linux' && Process.arch === 'arm64' && isAndroid) {
-        Interceptor.attach(button_ex, {
-            onEnter(args) {
-                if (args[1].isNull()) return;
+    Interceptor.replace(button_ex, new NativeCallback(function (a1, a2, a3, a4, a5) {
+        const ret = button_ex(a1, a2, a3, a4, a5);
 
-                /** @type {Arm64CpuContext} */
-                //@ts-ignore
-                const context = this.context;
-
-                const a1 = context.s0;
-                const a2 = context.s1;
-                // log('mods', args[1].readCString(), a1, a2);
-                if ((a1 || a2) && (this.returnAddress > layout_title && this.returnAddress < layout_title.add(0xFF))) {
-                    log('mods', args[1].readCString(), a1, a2);
-
-                    // const btn = button_ex_arm64(0, L("Mods"), findSymbol('main_btn_data_func'), a1, a2 - 1);
-                    const btn = button_ex(a1, a2 - 1, 0, L("Mods"), findSymbol('main_btn_data_func'));
-                    setOnClickListenerEx(btn, modCallback);
-                }
-            }
-        });
-    } else {
-        if (Process.platform == 'windows')
-            Interceptor.attach(button_ex, {
-                onEnter(args) {
-                    if (args[3].isNull()) return;
-                    const a1 = new Float32Array(new Int32Array([args[0].toInt32()]).buffer)[0];
-                    const a2 = new Float32Array(new Int32Array([args[1].toInt32()]).buffer)[0];
-                    if ((a1 || a2) && (this.returnAddress > layout_title && this.returnAddress < layout_title.add(0xFF))) {
-
-                        const btn = button_ex(a1, a2 - 1, 0, L("Mods"), findSymbol('main_btn_data_func'));
-                        setOnClickListenerEx(btn, modCallback);
-                    }
-                }
-            });
-
-        if (Process.platform === 'linux' && Process.arch === 'x64') {
-            Interceptor.replace(button_ex, new NativeCallback(function (a1, a2, a3, a4, a5) {
-                // a1, a2 -> XMM0/XMM1 两个 float；a4 -> label 字符串指针（源码第 4 个参数，
-                // 对应 arm64 分支里的 args[1]）
-                const ret = button_ex(a1, a2, a3, a4, a5); // 链到原实现，渲染原始按钮
-
-                if ((a1 || a2) && (this.returnAddress > layout_title && this.returnAddress < layout_title.add(0x1FF))) {
-                    const btn = button_ex(a1, a2 - 1, 0, L("Mods"), findSymbol('main_btn_data_func'));
-                    setOnClickListenerEx(btn, modCallback);
-                }
-                return ret;
-            }, 'pointer', ['float', 'float', 'int', 'pointer', 'pointer']));
+        if (a4.equals(LANG_STR[START])) {
+            const btn = button_ex(a1, a2 - 1, 0, L("Mods"), findSymbol('main_btn_data_func'));
+            setOnClickListenerEx(btn, modCallback);
         }
-    }
+
+        if (a4.equals(LANG_STR['Fast Text'])) {
+            const btn = button_ex(a1, a2 + 2, 0, L("Language"), findSymbol('main_btn_data_func'));
+            setOnClickListenerEx(btn, navFun('langCall', () => {
+                const main_trigger_event = new NativeFunction(findSymbol('main_trigger_event'), 'int', ['int']);
+                const main_tabscreen_start = new NativeFunction(findSymbol('main_tabscreen_start'), 'int', []);
+                const main_push_popup_state = new NativeFunction(findSymbol('main_push_popup_state'), 'int', ['pointer']);
+                main_trigger_event(11);
+                main_tabscreen_start();
+                main_push_popup_state(LangLayout);
+            }));
+        }
+        return ret;
+    }, 'pointer', ['float', 'float', 'int', 'pointer', 'pointer']));
 
     /**
      * @typedef {Object} Mod
@@ -481,32 +388,6 @@ function hook() {
 
             log('modLayout')
 
-
-            if (!mods_init) {
-                mods_init = true;
-
-                const dirPath = globalThis.modsDir
-
-                fs.readdirSync(dirPath).forEach(ele => {
-                    if (ele === '.' || ele === '..') return;
-
-                    const fullPath = `${dirPath}/${ele}`;
-                    const stats = fs.lstatSync(fullPath);
-
-                    if (stats.isDirectory()) {
-                        try {
-                            const mstr = File.readAllText(fullPath + '/' + 'package.json');
-                            /** @type {Mod} */
-                            const mjson = JSON.parse(mstr);
-                            mjson.modDir = fullPath;
-                            mods.push(mjson);
-                        } catch (e) {
-                            error(e)
-                        }
-                    }
-                });
-            }
-
             main_tabscreen_reset();
             main_tabscreen_set_exitfunc(ptr(0));
             main_tabscreen_add_tab(L("Mods"), modTabLayout);
@@ -535,6 +416,31 @@ function hook() {
             const cyoa_start = new NativeFunction(findSymbol('cyoa_start'), 'int', ['int']);
             const cyoa_hint = new NativeFunction(findSymbol('cyoa_hint'), 'int', []);
 
+            if (!mods_init) {
+                mods_init = true;
+
+                const dirPath = globalThis.modsDir
+
+                fs.readdirSync(dirPath).forEach(ele => {
+                    if (ele === '.' || ele === '..') return;
+
+                    const fullPath = `${dirPath}/${ele}`;
+                    const stats = fs.lstatSync(fullPath);
+
+                    if (stats.isDirectory()) {
+                        try {
+                            const mstr = File.readAllText(fullPath + '/' + 'package.json');
+                            /** @type {Mod} */
+                            const mjson = JSON.parse(mstr);
+                            mjson.modDir = fullPath;
+                            mods.push(mjson);
+                        } catch (e) {
+                            error(e)
+                        }
+                    }
+                });
+            }
+
             button_set_layout(1.0, 1.0);
             main_tabscreen_blank_tab_layout();
             button_set_layout(2.0, 3.0);
@@ -544,34 +450,32 @@ function hook() {
                 setOnClickListener(btn, () => {
                     log('desc_' + mod.name);
                     cyoa_just_ok(L(mod.description));
-                    cyoa_set_choice_func(callback('desc_ok_' + mod.name,
+                    cyoa_set_choice_func(navFun('desc_ok_' + mod.name,
                         () => {
                             log('desc_ok_' + mod.name);
                             return 1;
                         }
                     ));
                     cyoa_add_choice();
-                    cyoa_set_choice_func(callback('desc_update_' + mod.name,
+                    cyoa_set_choice_func(navFun('desc_update_' + mod.name,
                         () => {
                             log('desc_update_' + mod.name);
                             return 1;
                         }
                     ));
-                    cyoa_set_choice_text(L("Check for Updates"));
-                    cyoa_add_choice();
-                    cyoa_set_choice_func(callback('desc_delete_' + mod.name,
+                    cyoa_set_choice_func(navFun('desc_delete_' + mod.name,
                         () => {
                             log('desc_delete_' + mod.name);
 
                             cyoa_just_ok(L(`Delete the mod '${mod.name}'?`));
-                            cyoa_set_choice_func(callback('desc_delete_confirm_no_' + mod.name,
+                            cyoa_set_choice_func(navFun('desc_delete_confirm_no_' + mod.name,
                                 () => {
                                     return 1;
                                 }
                             ));
                             cyoa_set_choice_text(L("NO"));
                             cyoa_add_choice();
-                            cyoa_set_choice_func(callback('desc_delete_confirm_delete_' + mod.name,
+                            cyoa_set_choice_func(navFun('desc_delete_confirm_delete_' + mod.name,
                                 () => {
                                     const dirPath = globalThis.modsDir
                                     fs.readdirSync(dirPath).forEach(ele => {
@@ -734,6 +638,54 @@ function hook() {
                     return 0;
                 }
             );
+            return 0;
+        },
+        'uint',  // 返回值: LRESULT
+        []
+    );
+
+    const LangLayout = new NativeCallback(
+        () => {
+            const button_set_layout = new NativeFunction(findSymbol('button_set_layout'), 'int', ['float', 'float']);
+            const main_tabscreen_blank_tab_layout = new NativeFunction(findSymbol('main_tabscreen_blank_tab_layout'), 'int', []);
+            const main_tabscreen_tabbox_shrink = new NativeFunction(findSymbol('main_tabscreen_tabbox_shrink'), 'int', []);
+            const main_btn_data_func = new NativeFunction(findSymbol('main_btn_data_func'), 'int', []);
+            const game_lower_box = new NativeFunction(findSymbol('game_lower_box'), 'int', ['pointer']);
+            const cyoa_just_ok = new NativeFunction(findSymbol('cyoa_just_ok'), 'int', ['pointer']);
+            const cyoa_set_choice_text = new NativeFunction(findSymbol('cyoa_set_choice_text'), 'int', ['pointer']);
+            const cyoa_add_choice = new NativeFunction(findSymbol('cyoa_add_choice'), 'int', []);
+            const cyoa_set_title = new NativeFunction(findSymbol('cyoa_set_title'), 'int', ['pointer']);
+            const cyoa_set_choice_func = new NativeFunction(findSymbol('cyoa_set_choice_func'), 'int', ['pointer']);
+            const cyoa_start = new NativeFunction(findSymbol('cyoa_start'), 'int', ['int']);
+            const cyoa_hint = new NativeFunction(findSymbol('cyoa_hint'), 'int', []);
+            const cyoa_yesno = new NativeFunction(findSymbol('cyoa_yesno'), 'int', ['pointer', 'pointer', 'pointer', 'pointer']);
+            const main_common_page_setup = new NativeFunction(findSymbol('main_common_page_setup'), 'int', ['pointer', 'int']);
+
+            main_common_page_setup(L('SELECT LANGUAGE'), 0);
+            button_set_layout(1.0, 1.0);
+            main_tabscreen_blank_tab_layout();
+            button_set_layout(4.0, 6.0);
+
+            const path = mod.dir + '/assets/lang.json';
+            const jsonStr = File.readAllText(path);
+            const json = JSON.parse(jsonStr);
+            const langs = Object.keys(json['string_literal']);
+            langs.forEach((lang, i, array) => {
+                const btn = button_ex((i % 4), Math.floor(i / 4), i, L(lang), main_btn_data_func);
+                setOnClickListener(btn, () => {
+
+                    cyoa_yesno(L('Change Lang to ' + lang + '?'), L('YES'), L('NO'),
+                        navFun('', (ptr) => {
+                            if (ptr instanceof NativePointer) {
+                                const yes = ptr.add(80).readInt();
+                                if (yes) {
+                                    loadLangEx(lang, true);
+                                }
+                            }
+                        }, 'void', ['pointer'])
+                    );
+                });
+            });
             return 0;
         },
         'uint',  // 返回值: LRESULT
@@ -1175,7 +1127,7 @@ function hookUtf8() {
                 args[1] = LANG_STR[str];
             }
         });
-    } else {
+    } else if (Process.platform === 'windows') {
         Interceptor.attach(button_ex, {
             onEnter(args) {
                 if (args[3].isNull()) return;
@@ -1184,6 +1136,17 @@ function hookUtf8() {
                 args[3] = LANG_STR[str];
             }
         });
+    } else if (Process.platform === 'darwin') {
+        Interceptor.attach(button_ex, {
+            onEnter(args) {
+                if (args[1].isNull()) return;
+                const str = readByteString(args[1]);
+                if (!str || !LANG_STR[str]) return;
+                args[1] = LANG_STR[str];
+            }
+        });
+    } else {
+        throw new Error(`Unsupported platform: ${Process.platform}`);
     }
 
 
@@ -1418,26 +1381,31 @@ function L(str) {
 }
 
 /** @type {Object<string, NativePointer>} */
-const callbackList = {};
-/** @param {string} name @param {NativeCallbackImplementation<number, []>} fun  @returns {NativePointer} */
-function callback(name, fun) {
+const navFunList = {};
+/** 
+ * @param {string} name 
+ * @param {NativeCallbackImplementation<NativeCallbackReturnValue, RecursiveValuesOf<NativeCallbackArgumentTypeMap>[]>} fun  
+ * @param {NativeCallbackReturnType} ret  
+ * @param {[] | NativeCallbackArgumentType[]} arg  
+ * @returns {NativePointer} */
+function navFun(name, fun, ret = 'void', arg = []) {
     const p = new NativeCallback(
         fun,
-        'uint',
-        []
+        ret,
+        arg
     );
-    callbackList[name] = p;
-    return callbackList[name];
+    navFunList[name] = p;
+    return p;
 }
 /** @type {Object<number, NativePointer>} */
 const OnClickListenerMap = {};
 /** @param {NativePointer} btn @param {NativePointer} funPtr  @returns {NativePointer} */
 function setOnClickListenerEx(btn, funPtr) {
     OnClickListenerMap[btn.toInt32()] = funPtr;
-    if (Process.platform === 'windows') {
+    if (Process.arch === 'ia32') {
         btn.add(4 * 58).writePointer(OnClickListenerMap[btn.toInt32()]);
     }
-    if (Process.platform === 'linux') {
+    if (Process.arch === 'arm64' || Process.arch === 'x64') {
         btn.add(8 * 32).writePointer(OnClickListenerMap[btn.toInt32()]);
     }
     return btn;
@@ -1512,7 +1480,7 @@ function readByteString(p) {
  * @returns {NativePointer}
  */
 function findSymbol(name) {
-    if (Process.platform === 'linux') {
+    if (Process.platform === 'linux' || Process.platform === 'darwin') {
         let exp = globalThis.mainModule.findExportByName(name);
         if (!exp) {
             const sym = globalThis.mainModule.enumerateSymbols().find(s => s.name === name);

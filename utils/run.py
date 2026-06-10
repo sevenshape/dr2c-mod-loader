@@ -6,9 +6,7 @@ import threading
 from pathlib import Path
 import re
 import frida
-from tkinter import Tk, filedialog
-import tkinter as tk
-from tkinter import ttk
+import xdialog
 
 if sys.platform == "win32":
     import winreg
@@ -30,6 +28,8 @@ def find_game_exe():
             return target
     if sys.platform == "linux":
         return "~/.steam/steam/steamapps/common/DeathRoadToCanada/prog-linux"
+    elif sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/Steam/steamapps/common/DeathRoadToCanada/DR2C.app/Contents/MacOS/DR2C")
     return None
 
 def on_message(message, data):
@@ -45,32 +45,13 @@ def on_message(message, data):
                 "success": True
             })
         elif payload["type"]=="filedialog":
-            result = filedialog.askopenfilename(
-                title="INSTALL MOD FROM FILE",
-                filetypes=[("zip", "*.zip")]
-            )
-
-            if isinstance(result, tuple):
-                result = result[0] if result else ""
+            result = xdialog.open_file("选择文件", filetypes=[("Zip", "*.zip")], multiple=False)
+            
             script.post({
                 "type": "filedialog",
                 "success": True,
                 "result": result
             })
-        elif payload["type"]=="progressdialog":
-            global progress_root
-            progress_root = tk.Tk()
-            progress_root.title("INSTALL MOD FROM FILE")
-            progress_root.geometry("300x100")
-            
-            progress_bar = ttk.Progressbar(progress_root, mode='indeterminate')
-            progress_bar.pack(pady=20, padx=20, fill='x')
-            progress_bar.start()
-            # progress_root.mainloop()
-        elif payload["type"]=="progressdialog_close":
-            # global progress_root
-            progress_root.destroy()
-            print("progress_bar destroyed")
         else:
             print("[agent]", payload)
 
@@ -126,8 +107,7 @@ def main():
     print("[*] 进程已 resume\n")
 
     try:
-        while not exited.wait(0.5):
-            pass
+        exited.wait()
     except KeyboardInterrupt:
         print("\n[*] 退出")
         session.detach()
