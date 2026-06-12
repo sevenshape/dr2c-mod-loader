@@ -3,10 +3,58 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { Command } = require('commander');
-const frida = require('frida');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
+
+
+// 判断是否在 pkg 打包后的环境中运行
+// @ts-ignore
+const isPkg = typeof process.pkg !== 'undefined';
+
+// 真实可执行文件所在目录(打包后 __dirname 指向虚拟路径,不能用)
+const exeDir = isPkg
+    ? path.dirname(process.execPath)
+    : __dirname;
+
+// snapshot 里的源路径(打包前后都用同一份代码)
+const sourceRoot = isPkg
+    ? path.join(path.dirname(process.argv[1]), '..', 'node_modules')
+    : path.join(__dirname, '..', 'node_modules');
+
+// 目标路径(exe 同目录下的 node_modules)
+const targetRoot = path.join(exeDir, 'node_modules');
+
+function copyDirRecursive(src, dest) {
+    if (!fs.existsSync(dest)) {
+        fs.mkdirSync(dest, { recursive: true });
+    }
+
+    const entries = fs.readdirSync(src, { withFileTypes: true });
+
+    for (const entry of entries) {
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+
+        if (entry.isDirectory()) {
+            copyDirRecursive(srcPath, destPath);
+        } else {
+            // 已存在就跳过,避免每次启动都覆盖
+            if (!fs.existsSync(destPath)) {
+                fs.copyFileSync(srcPath, destPath);
+            }
+        }
+    }
+}
+
+if (isPkg) {
+    console.log('Extracting assets to:', targetRoot);
+    copyDirRecursive(sourceRoot, targetRoot);
+    console.log('Done.');
+}
+
+console.log('fridaPath:', path.join(exeDir, 'node_modules', 'frida'));
+const frida = require(isPkg ? path.join(exeDir, 'node_modules', 'frida') : 'frida');
 
 async function openZipFile(title = 'Install Mod From File') {
     const platform = process.platform;
