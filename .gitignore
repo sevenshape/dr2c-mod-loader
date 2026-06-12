@@ -8,9 +8,13 @@
 !index.js
 !index.html
 !assets/
-!assets/**/*
+!assets/lang.json
+!assets/font_ucs2_12x12.png
 
 !utils/
 !utils/**/*
 
 /utils/android/.gradle
+
+!README.md
+!LICENSE
