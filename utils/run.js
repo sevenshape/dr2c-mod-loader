@@ -14,17 +14,33 @@ async function openZipFile(title = 'Install Mod From File') {
 
     try {
         if (platform === 'win32') {
-            // Windows: PowerShell + .NET OpenFileDialog,-Sta 必须加
             const escTitle = title.replace(/'/g, "''");
             const ps = `
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         Add-Type -AssemblyName System.Windows.Forms
+
+        # 创建一个隐藏的 topmost 窗口作为 owner
+        $owner = New-Object System.Windows.Forms.Form
+        $owner.TopMost = $true
+        $owner.ShowInTaskbar = $false
+        $owner.WindowState = 'Minimized'
+        $owner.Opacity = 0
+        $owner.Show()
+        $owner.Hide()
+        # 强制激活
+        [System.Windows.Forms.Application]::DoEvents()
+        $owner.Activate()
+
         $f = New-Object System.Windows.Forms.OpenFileDialog
         $f.Title = '${escTitle}'
         $f.Filter = 'ZIP files (*.zip)|*.zip'
         $f.Multiselect = $false
-        if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }
-      `;
+
+        $result = $f.ShowDialog($owner)
+        $owner.Dispose()
+
+        if ($result -eq 'OK') { Write-Output $f.FileName }
+    `;
             const { stdout } = await execFileAsync(
                 'powershell',
                 ['-NoProfile', '-Sta', '-Command', ps],
@@ -59,6 +75,35 @@ end try`;
     }
 }
 
+async function openGameExeFile(title = 'Select Game File') {
+    const platform = process.platform;
+
+    try {
+        if (platform === 'win32') {
+            // Windows: PowerShell + .NET OpenFileDialog,-Sta 必须加
+            const escTitle = title.replace(/'/g, "''");
+            const ps = `
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        Add-Type -AssemblyName System.Windows.Forms
+        $f = New-Object System.Windows.Forms.OpenFileDialog
+        $f.Title = '${escTitle}'
+        $f.Filter = 'prog.exe|prog.exe'
+        $f.Multiselect = $false
+        if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }
+      `;
+            const { stdout } = await execFileAsync(
+                'powershell',
+                ['-NoProfile', '-Sta', '-Command', ps],
+                { encoding: 'utf8' }
+            );
+            return stdout.trim() || null;
+        }
+    } catch (e) {
+        // 用户取消 / zenity 没装 / 用户没选文件 → 一律当作 null
+        return null;
+    }
+}
+
 function expanduser(p) {
     if (!p) return p;
     if (p.startsWith('~')) return path.join(os.homedir(), p.slice(1));
@@ -76,7 +121,10 @@ async function findGameExe() {
         const steamPath = stdout.trim();
 
         if (!steamPath) {
-            throw new Error('Steam installation path not found');
+            return '';
+        }
+        if (!fs.existsSync(path.join(steamPath, 'steamapps', 'common', 'DeathRoadToCanada', 'prog.exe'))) {
+            return '';
         }
         return path.join(steamPath, 'steamapps', 'common', 'DeathRoadToCanada', 'prog.exe');
     }
@@ -138,13 +186,46 @@ async function main() {
 
     const args = program.opts();
 
+    const isCompiled = __filename.includes("deno-compile-");
+
     if (!args.target) {
-        const gameExe = await findGameExe();
-        if (!gameExe) throw new Error('Fail to find game directory');
+        let gameExe = await findGameExe();
+        if (!gameExe && !(gameExe = await openGameExeFile())) {
+            throw new Error('Fail to find game exe')
+        };
         args.target = gameExe;
     }
 
     const targetPath = expanduser(args.target);
+
+    if (isCompiled) {
+        const targetDir = path.join(path.dirname(args.target), 'mods', 'dr2c-mod-loader');
+        const sourceDir = path.join(__dirname, '..', 'dist');
+
+        if (!fs.existsSync(path.join(targetDir, 'main.js'))) {
+            fs.cpSync(sourceDir, targetDir, { recursive: true });
+
+            const chmodRecursive = (dir) => {
+                fs.chmodSync(dir, 0o755);
+                for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                    const fullPath = path.join(dir, entry.name);
+                    if (entry.isDirectory()) {
+                        chmodRecursive(fullPath);
+                    } else {
+                        fs.chmodSync(fullPath, 0o644);
+                    }
+                }
+            };
+            chmodRecursive(targetDir);
+
+            console.log(`Copied ${sourceDir} to ${targetDir}`);
+        } else {
+            console.log(`${targetDir} already exists, skipping copy`);
+        }
+
+
+        args.script = path.join(targetDir, 'main.js');
+    }
 
     const agentSource = fs.readFileSync(args.script, 'utf-8');
 

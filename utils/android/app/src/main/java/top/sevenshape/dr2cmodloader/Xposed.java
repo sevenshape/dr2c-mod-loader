@@ -40,18 +40,16 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     protected void afterHookedMethod(MethodHookParam param) {
 
                         Context ctx = (Context) param.thisObject;
-                        File modDir = ctx.getExternalFilesDir("");
+                        File modDir = new File(ctx.getExternalFilesDir(""), "mods/dr2c-mod-loader");
+                        File scriptFile = new File(modDir, "main.js");
                         log("modDir: " + modDir.getAbsolutePath());
+                        log("scriptFile: " + scriptFile.getAbsolutePath());
 
                         try {
-                            File versionFile = new File(modDir, ".asset_version");
-                            String current = BuildConfig.VERSION_NAME; // 跟着模块版本走
-
-                            if (versionFile.exists() && current.equals(readText(versionFile))) {
+                            if (scriptFile.exists()) {
                                 log("skip execution to copyAssets");
                             } else {
                                 Xposed.copyAssets(xam, "public", modDir);
-                                writeText(versionFile, current);
                             }
                         } catch (Exception e) {
                             error("fail to copyAssets", e);
@@ -74,7 +72,7 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     public static void copyAssets(AssetManager am, String assetPath, File destDir) throws IOException {
         String[] children = am.list(assetPath);
         if (children != null && children.length > 0) {
-            // 目录
+            
             if (!destDir.exists())
                 destDir.mkdirs();
             for (String name : children) {
@@ -82,7 +80,7 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 copyAssets(am, childAsset, new File(destDir, name));
             }
         } else {
-            // 文件
+            
             File parent = destDir.getParentFile();
             if (parent != null && !parent.exists())
                 parent.mkdirs();

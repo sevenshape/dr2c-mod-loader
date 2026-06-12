@@ -1734,9 +1734,9 @@ function mkdirSync(path) {
 function rmrfSync(target) {
     let st;
     try {
-        st = fs.statSync(target);     // 注意是 lstat,不是 stat
+        st = fs.statSync(target);
     } catch (e) {
-        return; /* 不存在就成功 */
+        return;
     }
 
     // 符号链接(即使指向目录)也按文件删,绝对不能递归进去
