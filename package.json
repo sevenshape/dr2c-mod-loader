@@ -17,21 +17,22 @@
     "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && node utils/run-android.js com.noodlecake.drtc",
     "init:android": "npx cap add android && node -e \"const fs = require('fs-extra'); fs.copySync('utils/android', 'android', { overwrite: true });\"",
     "build:apk": "cd android && gradlew assembleRelease && echo APK: ./android/app/build/outputs/apk/release/app-release.apk",
-    "build:apk:install": "cd android && gradlew installRelease",
+    "install:apk": "cd android && gradlew installRelease",
     "tag:dev": "node -e \"const ts = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(2, 14);require('child_process').execSync('cross-var git tag %npm_package_version%-dev.' + ts + ' -m \\\"dev build\\\"', {stdio: 'inherit'})\"",
-    "dev:apk": "npm run build && npx cap sync android && npm run tag:dev && npm run build:apk:install && adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed",
-    "dev:apk:reload": "adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed"
+    "dev:apk": "npm run build && npx cap sync android && npm run tag:dev && npm run install:apk && adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed",
+    "dev:apk:reload": "adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed",
+    "pck": "npx deno compile --allow-all --output ./build/dr2c-mod-loader utils/run.js"
   },
   "devDependencies": {
     "@types/frida-gum": "^19.1.0",
-    "@yao-pkg/pkg": "^6.20.0",
     "cross-env": "^10.1.0",
     "cross-var": "^1.1.0",
-    "fs-extra": "^11.3.5"
+    "deno": "^2.8.3",
+    "fs-extra": "^11.3.5",
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4"
   },
   "dependencies": {
-    "@capacitor/android": "^8.3.4",
-    "@capacitor/cli": "^8.3.4",
     "commander": "^15.0.0",
     "frida": "^17.11.0",
     "frida-fs": "^7.0.0",
@@ -39,7 +40,6 @@
     "jszip": "^3.10.1",
     "lzma-native": "^8.0.6",
     "undici": "^8.3.0",
-    "winreg": "^1.2.5",
     "xregexp": "^5.1.2"
   }
 }
