@@ -3,11 +3,12 @@
   "version": "0.0.1",
   "description": "Load mod to dr2c.",
   "license": "ISC",
-  "author": "",
+  "author": "sevenshape",
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "pipx install -v frida-tools",
     "which": "which frida-compile && frida-compile --version && which frida && frida --version",
     "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.mkdirSync('dist');fs.cpSync('assets','dist/assets',{recursive:true});fs.cpSync('index.js','dist/index.js');fs.cpSync('index.html','dist/index.html');fs.cpSync('package.json','dist/package.json');\" && frida-compile index.js -o dist/main.js",
     "build:package": "npm run build && node utils/pack.js",
@@ -16,12 +17,15 @@
     "dev:android": "npm run build && node utils/run-android.js com.noodlecake.drtc",
     "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && node utils/run-android.js com.noodlecake.drtc",
     "init:android": "npx cap add android && node -e \"const fs = require('fs-extra'); fs.copySync('utils/android', 'android', { overwrite: true });\"",
-    "build:apk": "cd android && gradlew assembleRelease && echo APK: ./android/app/build/outputs/apk/release/app-release.apk",
     "install:apk": "cd android && gradlew installRelease",
     "tag:dev": "node -e \"const ts = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(2, 14);require('child_process').execSync('cross-var git tag %npm_package_version%-dev.' + ts + ' -m \\\"dev build\\\"', {stdio: 'inherit'})\"",
     "dev:apk": "npm run build && npx cap sync android && npm run tag:dev && npm run install:apk && adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed",
     "dev:apk:reload": "adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed",
-    "pck": "npx deno compile --include ./dist --allow-all --output ./build/dr2c-mod-loader utils/run.js"
+    "pck": "npm run build && node -e \"const p=process;const out='./build/dr2c-mod-loader-'+p.platform+'-'+p.arch;require('child_process').execSync('npx deno compile --include ./dist --allow-all --output '+out+' utils/run.js',{stdio:'inherit'})\"",
+    "tag:prod": "cross-var git tag -f $npm_package_version",
+    "copy-apk": "node -e \"require('fs').copyFileSync('./android/app/build/outputs/apk/release/app-release.apk', './build/modloader.apk')\"",
+    "build:apk": "npm run tag:prod && npm run build && npx cap sync android && cd android && gradlew assembleRelease && npm run copy-apk",
+    "diff": "git diff > changes.patch"
   },
   "devDependencies": {
     "@types/frida-gum": "^19.1.0",
