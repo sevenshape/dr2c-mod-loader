@@ -4,8 +4,6 @@ A [Frida](https://frida.re/)-based mod loader for [Death Road to Canada](http://
 
 It injects your mod into the game at runtime — no need to modify the original files — and works on both **desktop** and **Android**. It can also repackage the game into a mod-bundled APK, or compile the loader into a single standalone executable.
 
-> **Status:** early development (`v0.0.1`). APIs and scripts may change.
-
 ---
 
 ## Install & Run
