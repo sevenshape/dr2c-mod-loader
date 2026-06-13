@@ -18,6 +18,190 @@ function requireAgent(libName) {
     return NULL;
 }
 
+const cm = new CModule(`
+#include <stdint.h>
+#include <string.h>
+
+int
+markChar (const uint8_t * restrict input,
+             uint8_t * restrict output,
+             int FULL_WIDTH,
+             int HALF_WIDTH,
+             uint8_t * restrict markCharUni,
+             int fillChar)
+{
+  int len = 0;
+  const uint8_t fw = (uint8_t) FULL_WIDTH;
+  const uint8_t hw = (uint8_t) HALF_WIDTH;
+  const uint8_t fc = (uint8_t) fillChar;
+  const uint8_t *p = input;
+  uint8_t *out = output;
+
+  uint8_t b0;
+  while ((b0 = *p) != 0)
+  {
+    if (b0 < 0x80)                      /* ASCII (最常见，最先判断) */
+    {
+      *out++ = b0;
+      p++;
+      continue;
+    }
+
+    if (b0 >= 0xC2 && b0 < 0xE0)        /* 2 字节 */
+    {
+      uint8_t b1 = p[1];
+      if ((b1 & 0xC0) == 0x80)
+      {
+        markCharUni[len]     = b0;
+        markCharUni[len + 1] = b1;
+        markCharUni[len + 2] = 0;
+        len += 3;
+        out[0] = fc;
+        out[1] = hw;
+        out += 2;
+        p += 2;
+        continue;
+      }
+    }
+    else if (b0 >= 0xE0 && b0 < 0xF0)   /* 3 字节 */
+    {
+      uint8_t b1 = p[1];
+      if ((b1 & 0xC0) == 0x80 &&
+          !(b0 == 0xE0 && b1 < 0xA0) &&
+          !(b0 == 0xED && b1 >= 0xA0))
+      {
+        uint8_t b2 = p[2];
+        if ((b2 & 0xC0) == 0x80)
+        {
+          markCharUni[len]     = b0;
+          markCharUni[len + 1] = b1;
+          markCharUni[len + 2] = b2;
+          len += 3;
+          out[0] = fc;
+          out[1] = fc;
+          out[2] = fw;
+          out += 3;
+          p += 3;
+          continue;
+        }
+      }
+    }
+
+    *out++ = b0;                        /* 非法序列 */
+    p++;
+  }
+
+  *out = 0;
+  return len;
+}
+
+int getBmpCodePoint (const uint8_t *buf, int offset, int totalLen)
+{
+  if (offset >= totalLen)
+    return 0;
+
+  uint8_t b0 = buf[offset];
+
+  /* 1. ASCII (0x00-0x7F): 0xxxxxxx —— 最常见, 最先判断 */
+  if (b0 < 0x80)
+    return b0;
+
+  /* 续字节(0x80-0xBF)出现在起始位置, 或过长编码(0xC0-0xC1) → 非法 */
+  if (b0 < 0xC2)
+    return 0;
+
+  /* 2. 2 字节: 110xxxxx 10xxxxxx */
+  if (b0 < 0xE0)
+  {
+    if (offset + 2 > totalLen)
+      return 0;
+    uint8_t b1 = buf[offset + 1];
+    if ((b1 & 0xC0) != 0x80)            /* 验证续字节 10xxxxxx */
+      return 0;
+    return ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+  }
+
+  /* 3. 3 字节: 1110xxxx 10xxxxxx 10xxxxxx */
+  if (b0 < 0xF0)
+  {
+    if (offset + 3 > totalLen)
+      return 0;
+    uint8_t b1 = buf[offset + 1];
+    if ((b1 & 0xC0) != 0x80)
+      return 0;
+    if (b0 == 0xE0 && b1 < 0xA0)        /* 过长编码 (< U+0800) */
+      return 0;
+    if (b0 == 0xED && b1 >= 0xA0)       /* 代理区 (U+D800-U+DFFF) */
+      return 0;
+    uint8_t b2 = buf[offset + 2];
+    if ((b2 & 0xC0) != 0x80)
+      return 0;
+    return ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+  }
+
+  /* b0 >= 0xF0 : 4 字节及以上, 超出 BMP → 0 */
+  return 0;
+}
+`);
+
+/**
+ * @brief 标记并替换 UTF-8 字符串中的多字节字符
+ *
+ * 遍历输入的 UTF-8 字符串，将所有有效的 2 字节、3 字节 UTF-8 字符
+ * 替换为指定填充字符构成的占位序列，同时将被替换的原始字节序列
+ * 保存到 markCharUni 数组中。ASCII 字符原样保留，非法 UTF-8 序列
+ * 的首字节也原样保留。
+ *
+ * @param input         输入字符串，以 '\0' 结尾的 UTF-8 编码字节流
+ * @param output        输出缓冲区，存放替换后的字符串（调用者需确保空间足够：
+ *                      ASCII 字符 1:1 复制；2字节字符变为 2 字节填充；
+ *                      3字节字符变为 3 字节填充）
+ * @param FULL_WIDTH    全角字符（3字节）的第三个填充字节
+ * @param HALF_WIDTH    半角宽字符（2字节）的第二个填充字节
+ * @param markCharUni   输出缓冲区，连续存放所有被替换字符的原始 UTF-8 字节序列，
+ *                      每个序列后追加一个 '\0' 作为分隔符。
+ *                      例如：被替换一个 2字节序列，写入 b0, b1, 0x00 共 3 字节
+ * @param fillChar      填充字符的主字节，用于替换序列的第1和第2字节（3字节时）
+ *
+ * @return              写入 markCharUni 的总字节数（包含分隔符 '\0'）。
+ *                      若返回 0，表示未替换任何多字节字符。
+ *
+ * @note  本函数只处理 2 字节（U+0080 ~ U+07FF）和 3 字节（U+0800 ~ U+FFFF）
+ *        的 UTF-8 字符。4 字节序列（U+10000 以上）不会被识别，其首字节
+ *        会被当作非法序列处理。
+ * @note  对 2 字节序列的合法性做了基本校验（检查 C2~DF 范围及后续字节格式），
+ *        对 3 字节序列额外排除了超长编码（E0 A0~BF）和 UTF-16 代理区（ED A0~BF）。
+ */
+const markCharNav = new NativeFunction(cm.markChar, 'int', [
+    'pointer', // input
+    'pointer', // output
+    'int',     // FULL_WIDTH
+    'int',     // HALF_WIDTH
+    'pointer', // markCharUni
+    'int'      // fillChar
+]);
+
+/**
+ * @brief 从 buffer 读取一个 UTF-8 序列，返回 BMP 码点
+ *
+ * 解析 buffer 中从 offset 位置开始的 UTF-8 字节序列，将其解码为
+ * Unicode 码点。只处理 BMP 范围内的字符（U+0000 ~ U+FFFF），
+ * 对于非法序列、超出 BMP 范围（4 字节序列，即 U+10000 以上）
+ * 或 buffer 长度不足的情况，均返回 0。
+ *
+ * @param buf       指向 UTF-8 字节流的指针
+ * @param offset    当前读取偏移量（字节索引）
+ * @param totalLen  buffer 的总字节长度
+ *
+ * @return 解码后的 Unicode BMP 码点（0x0000 ~ 0xFFFF），
+ *         解析失败时返回 0
+ */
+const getBmpCodePointNav = new NativeFunction(cm.getBmpCodePoint, 'int', [
+    'pointer',
+    'int',
+    'int'
+]);
+
 /**
  * @param {...any} args
  * @returns {void}
@@ -164,7 +348,7 @@ function loadLangEx(iso639_1, override = false) {
 
         log('load lang', path, Object.keys(LANG_STR).length);
     } catch (e) {
-        error('loadLangEx', e);
+        warn('loadLangEx', e);
     }
 }
 function loadLang() {
@@ -765,8 +949,8 @@ function hookUtf8() {
     // ── 主逻辑 ────────────────────────────────────────────────
     /** @type {NativeFunction<number, [number, number, NativePointer]> | null} */
     let originalGlyphCb = null;
-    /** @type {NativePointer | null} */
-    let originalGlyphCtx = null;
+    /** @type {NativePointer} */
+    let originalGlyphCtx;
     /** @type {number} */
     let font_base_id;  // 由 load_gfx 中的 hook 初始化
     let load_gfx_hooking = 0;
@@ -778,13 +962,13 @@ function hookUtf8() {
     const savedTurtle = Memory.alloc(96);
 
     // 预分配 text 保存缓冲区（2048 字节）
-    const savedA1Str = Memory.alloc(10240);
+    const markCharOut = Memory.alloc(10240);
 
 
     // ── Replace glyphs_set_callback ───────────────────────────────────────
     Interceptor.replace(GLYPHS_SET_CALLBACK, new NativeCallback(
         (a1, a2) => {
-            if (!font_base_id) return GLYPHS_SET_CALLBACK(a1, a2);
+            if (!unifont) return GLYPHS_SET_CALLBACK(a1, a2);
 
             if (!a1.isNull()) {
                 originalGlyphCb = new NativeFunction(a1, 'int', ['int', 'int', 'pointer']);
@@ -798,16 +982,19 @@ function hookUtf8() {
     ));
     log('Replace glyphs_set_callback 已安装');
 
+    let unifont = NULL;
+    let unifont_x = 0;
+    let unifont_y = 0;
+
     // ── Replace glyphs_batch_plot_ex ──────────────────────────────────────
-    Interceptor.replace(GLYPHS_BATCH_PLOT_EX, new NativeCallback(
+    const GLYPHS_BATCH_PLOT_EX_HOOK = Interceptor.replace(GLYPHS_BATCH_PLOT_EX, new NativeCallback(
         (a1, a2, a3, a4, a5) => {
-            if (!font_base_id) return GLYPHS_BATCH_PLOT_EX(a1, a2, a3, a4, a5);
-            // return 0;
+            if (!unifont) return GLYPHS_BATCH_PLOT_EX(a1, a2, a3, a4, a5);
             if (a1.isNull()) return 0;
 
             const v5 = a1.add(4).readS32();        // (int)a1[1]  base char code
-            const v21 = SPRITE_GET(a1.readS16());    // SPRITE_GET((INT16)a1[0])
-            const a1_v = a1.readS16();
+            const font = SPRITE_GET(a1.readS16());    // SPRITE_GET((INT16)a1[0])
+            const sprite_offset = Process.pointerSize === 8 ? 40 : 32;
 
             // 保存 turtle（96 字节）
             Memory.copy(savedTurtle, TURTLE_BASE, 96);
@@ -819,23 +1006,23 @@ function hookUtf8() {
             if (v6 <= v8) v8 = v6 - 1;
 
             // 第一个字形宽度的一半
-            let v9 = SPRITE_GET(a1_v + v8).add(12).readS16() * 0.5;
+            let v9 = font.add(sprite_offset * v8).add(12).readS16() * 0.5;
 
             // 累计所有字形宽度
             let v11 = 0.0;
             if (a3 > 0) {
                 for (let i = 0; i < a3; i++) {
-                    const bmpCodePoint = getBmpCodePoint(a2, i, a3);
+                    const bmpCodePoint = getBmpCodePointNav(a2, i, a3);
                     const _utf8Len = (bmpCodePoint < 0x80 || bmpCodePoint === -1) ? 0 :
                         (bmpCodePoint < 0x800) ? 2 : 3;
 
                     if (_utf8Len) {
                         const c = (_utf8Len === 3 ? FULL_WIDTH : HALF_WIDTH) - v5;/* 全半角按utf8长度判断 */
-                        v11 += SPRITE_GET(a1_v + c).add(12).readS16();
+                        v11 += font.add(sprite_offset * c).add(12).readS16();
                         i += _utf8Len - 1;
                     } else {
                         const c = a2.add(i).readU8() - v5;
-                        v11 += SPRITE_GET(a1_v + c).add(12).readS16();
+                        v11 += font.add(sprite_offset * c).add(12).readS16();
                     }
 
                 }
@@ -849,8 +1036,8 @@ function hookUtf8() {
 
             // 逐字形渲染
             for (let v13 = 0; v13 < a3; v13++) {
-                const bmpCodePoint = getBmpCodePoint(a2, v13, a3);
-                const _utf8Len = (bmpCodePoint < 0x80 || bmpCodePoint === -1) ? 0 :
+                const bmpCodePoint = getBmpCodePointNav(a2, v13, a3);
+                const _utf8Len = (bmpCodePoint < 0x80 || bmpCodePoint === 0) ? 0 :
                     (bmpCodePoint < 0x800) ? 2 : 3;
 
                 let v14 = (a2.add(v13).readU8() - v5) >>> 0;
@@ -860,11 +1047,11 @@ function hookUtf8() {
                 const charV14 = ((v14 & 0xFF) << 24) >> 24;   // (char)v14
 
                 if (!originalGlyphCb ||
-                    // @ts-ignore
                     !originalGlyphCb(charV14, 0, originalGlyphCtx)) {
+
                     const v15 = a1.add(8).readU32();
                     if (v14 >= v15) v14 = v15 - 1;
-                    const v16 = SPRITE_GET(a1_v + v14);
+                    const v16 = font.add(sprite_offset * v14);
 
                     if (v13) {
                         TURTLE_TRANS(v16.add(12).readS16() * 0.5, 0.0);
@@ -873,33 +1060,25 @@ function hookUtf8() {
                     if (!_utf8Len)
                         SPRITE_BATCH_PLOT(v16, 0, a5);
                     else {
-                        const p1 = SPRITE_GET(font_base_id);
-
-                        const t1 = p1.readU16();
-                        const t2 = p1.add(2).readU16();
-
                         /* TODO: 解决问题, 游戏在显示低分辨率时, 在显示换行字符时纹理会向下移动一个或两个像素 */
-                        p1.add(0).writeU16(t1 + 12 * (bmpCodePoint & 0xFF));/* 纹理x轴 */
-                        p1.add(2).writeU16(t2 + 12 * ((bmpCodePoint >> 8) & 0xFF));/* 纹理y轴 */
+                        unifont.add(0).writeU16(unifont_x + 12 * (bmpCodePoint & 0xFF));/* 纹理x轴 */
+                        unifont.add(2).writeU16(unifont_y + 12 * ((bmpCodePoint >> 8) & 0xFF));/* 纹理y轴 */
 
-                        p1.add(4).writeU16((_utf8Len === 3 ? 12 : 6));/* 宽度 */
-                        p1.add(6).writeU16(12);/* 高度 */
+                        unifont.add(4).writeU16(_utf8Len === 3 ? 12 : 6);/* 宽度 */
+                        unifont.add(6).writeU16(12);/* 高度 */
 
                         const scale = TURTLE_BASE.add(0x18).readDouble();
                         TURTLE_SET_SCALEX(scale * (_utf8Len === 3 ? 8 : 7) / 12);
                         TURTLE_SET_SCALEY(scale * 8 / 12);
-                        SPRITE_BATCH_PLOT(p1, 0, a5);
+                        SPRITE_BATCH_PLOT(unifont, 0, a5);
                         TURTLE_SET_SCALE(scale);
 
-                        p1.add(0).writeU16(t1);
-                        p1.add(2).writeU16(t2);
                         v13 += _utf8Len - 1;
                     }
                     TURTLE_TRANS(v16.add(12).readS16() * 0.5, 0.0);
                 }
 
                 if (originalGlyphCb)
-                    // @ts-ignore
                     originalGlyphCb(charV14, 1, originalGlyphCtx);
             }
 
@@ -913,7 +1092,7 @@ function hookUtf8() {
             if (savedFloats !== null) {
                 TURTLE_BASE.add(0x50).writeByteArray(savedFloats);
             } else {
-                throw new Error("[!] 无法读取保存的浮点数据");
+                throw new Error("无法读取保存的浮点数据");
             }
 
             return a3;
@@ -923,8 +1102,9 @@ function hookUtf8() {
     log('Replace glyphs_batch_plot_ex 已安装');
 
     // ── Attach load_gfx ──────────────────────────────────────
-    Interceptor.attach(load_gfx, {
+    const load_gfx_hook = Interceptor.attach(load_gfx, {
         onEnter(args) {
+            cm.markChar;
             load_gfx_hooking = 1;
         },
         onLeave(retval) {
@@ -953,6 +1133,9 @@ function hookUtf8() {
                 font_base_id = 0;
                 throw new Error('字体图集加载失败');
             }
+            unifont = SPRITE_GET(font_base_id);
+            unifont_x = unifont.readU16();
+            unifont_y = unifont.add(2).readU16();
         }
     });
     log('Attach load_gfx 已安装');
@@ -1028,48 +1211,54 @@ function hookUtf8() {
     });
 
     // ── utf8自动换行逻辑 ──────────────────────────────────────
-    /* TODO: 解决WRAP_TEXT_EX因性能问题导致的游戏卡顿 */
+    const markCharUni = Memory.alloc(10240 * 2);
+    const FILL_CHAR = 0xFF;
     Interceptor.attach(WRAP_TEXT_EX, {
         onEnter(args) {
             if (args[0].isNull()) return;
             this.a1 = args[0];
             const strPtr = args[0].readPointer();
             this.a1_str_ptr = strPtr;
-            const strLen = _strlen(strPtr).toNumber();
-            this.a1_str_len = strLen;
-            if (strLen === 0) return;
 
-            this.savedBytes = savedA1StrPush(strPtr, strLen, FULL_WIDTH, HALF_WIDTH, savedA1Str);
-            this.a1.writePointer(savedA1Str);
+            this.markLen = markCharNav(strPtr, markCharOut, FULL_WIDTH, HALF_WIDTH, markCharUni, FILL_CHAR);
+
+            this.a1.writePointer(markCharOut);
         },
 
         onLeave(retval) {
             if (retval.isNull()) return;
 
             const retLen = _strlen(retval).toNumber();
-            if (retLen === 0) {
-                const move_len = this.a1.readPointer().sub(savedA1Str);
-                this.a1.writePointer(this.a1_str_ptr.add(move_len));
-                return;
-            }
 
-            const buf = new Uint8Array(retval.readByteArray(retLen) ?? new ArrayBuffer(0));
-            const saved = this.savedBytes;
-            let idx = 0;
-            const savedCnt = saved.length;
+            if (retLen !== 0) {
+                const buf = new Uint8Array(retval.readByteArray(retLen) ?? new ArrayBuffer(0));
+                const saved = new Uint8Array(markCharUni.readByteArray(this.markLen * 3) || []);
+                let idx = 0;
 
-            for (let i = 0; i < retLen - 1; i++) {
-                const s1 = buf[i];
-                if ((s1 === FULL_WIDTH || s1 === HALF_WIDTH) && buf[i + 1] === 0xF0) {
-                    const bytes = idx < savedCnt ? saved[idx++] : [0];
-                    for (let j = 0; j < bytes.length; j++) buf[i + j] = bytes[j];
-                    i += bytes.length - 1;
+                for (let i = 0; i < retLen - 1; i++) {
+                    const s1 = buf[i];
+                    const s2 = buf[i + 1];
+                    const s3 = buf[i + 2];
+                    if (s1 === FILL_CHAR && (s2 === FULL_WIDTH || s2 === HALF_WIDTH)) {
+                        const b1 = saved[idx++];
+                        const b2 = saved[idx++];
+                        idx++;
+                        buf.set([b1, b2], i);
+                        i += 1;
+                    } else if (s1 === FILL_CHAR && s2 === FILL_CHAR && (s3 === FULL_WIDTH || s3 === HALF_WIDTH)) {
+                        const b1 = saved[idx++];
+                        const b2 = saved[idx++];
+                        const b3 = saved[idx++];
+
+                        buf.set([b1, b2, b3], i);
+                        i += 2;
+                    }
                 }
+
+                retval.writeByteArray(buf.buffer);
             }
 
-            retval.writeByteArray(buf.buffer);
-
-            const move_len = this.a1.readPointer().sub(savedA1Str);
+            const move_len = this.a1.readPointer().sub(markCharOut);
             this.a1.writePointer(this.a1_str_ptr.add(move_len));
         }
     });
@@ -1078,16 +1267,10 @@ function hookUtf8() {
     Interceptor.attach(text_w, {
         onEnter(args) {
             if (args[0].isNull()) return;
-            this.a1 = args[0];
-            const strLen = _strlen(this.a1).toNumber();
-            this.a1_str_len = strLen;
-            if (strLen === 0) return;
 
-            this.savedBytes = savedA1StrPush(this.a1, strLen, FULL_WIDTH, HALF_WIDTH, savedA1Str);
-            args[0] = savedA1Str;
-        },
+            markCharNav(args[0], markCharOut, FULL_WIDTH, HALF_WIDTH, markCharUni, FILL_CHAR);
 
-        onLeave(retval) {
+            args[0] = markCharOut;
         }
     });
 
@@ -1527,7 +1710,7 @@ function waitForModule(moduleName, callback) {
         const m = Process.findModuleByName(moduleName);
         if (!m) return;
         fired = true;
-        try { callback(m); } catch (e) { error('callback error: ' + e); }
+        try { callback(m); } catch (e) { error('callback error: ', e); }
     };
 
     // 1) 已加载就直接走
@@ -1537,14 +1720,15 @@ function waitForModule(moduleName, callback) {
     }
 
     // 2) hook android_dlopen_ext —— Android 7+ 加载 so 的真正入口
-
-    const dlopen_ext = Module.findGlobalExportByName("android_dlopen_ext");
+    // @ts-ignore
+    const dlopen_ext = Module.findExportByName ? Module.findExportByName(null, "android_dlopen_ext") : Module.findGlobalExportByName("android_dlopen_ext");
     if (dlopen_ext) {
         Interceptor.attach(dlopen_ext, {
             onEnter(args) {
                 this.path = args[0] ? args[0].readCString() : null;
             },
             onLeave() {
+                log(moduleName)
                 if (this.path && this.path.indexOf(moduleName) !== -1) {
                     fire();
                 }
@@ -1754,147 +1938,5 @@ function rmrfSync(target) {
     // 再删空目录本身
     fs.rmdirSync(target);
 }
-
-/* TODO: 把savedA1StrPush改为C语言函数提升效率 */
-/** @param {NativePointer} strPtr @param {number} strLen @returns {number[][]}  @param {*} FULL_WIDTH @param {*} HALF_WIDTH @param {*} savedA1Str  */
-function savedA1StrPush(strPtr, strLen, FULL_WIDTH, HALF_WIDTH, savedA1Str) {
-    // 一次性读入所有字节
-    const input = new Uint8Array(strPtr.readByteArray(strLen) ?? new ArrayBuffer(0));
-    const output = new Uint8Array(strLen + 1);
-    const savedBytes = [];
-
-    for (let i = 0; i < strLen; i++) {
-        const b0 = input[i];
-        let cp = -1;
-        let seqLen = 0;
-
-        // ---- 内联 getBmpCodePoint ----
-        if (b0 < 0x80) {
-            cp = b0;                            // ASCII,后面 utf8Len=0 走原样拷贝
-        } else if (b0 < 0xC2) {
-            // 续字节起始 / 过长编码 → 非法
-        } else if (b0 < 0xE0) {
-            // 2 字节: 110xxxxx 10xxxxxx
-            if (i + 2 <= strLen) {
-                const b1 = input[i + 1];
-                if ((b1 & 0xC0) === 0x80) {
-                    cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
-                    seqLen = 2;
-                }
-            }
-        } else if (b0 < 0xF0) {
-            // 3 字节: 1110xxxx 10xxxxxx 10xxxxxx
-            if (i + 3 <= strLen) {
-                const b1 = input[i + 1];
-                if ((b1 & 0xC0) === 0x80 &&
-                    !(b0 === 0xE0 && b1 < 0xA0) &&     // 过长
-                    !(b0 === 0xED && b1 >= 0xA0)) {    // 代理对
-                    const b2 = input[i + 2];
-                    if ((b2 & 0xC0) === 0x80) {
-                        cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
-                        seqLen = 3;
-                    }
-                }
-            }
-        }
-        // b0 >= 0xF0 → cp 保持 -1
-        // ---- 内联结束 ----
-
-        // utf8Len 跟原逻辑等价: ASCII / 非法 → 0; 2字节 → 2; 3字节 → 3
-        const utf8Len = (cp < 0x80 || cp === -1) ? 0 : seqLen;
-
-        if (utf8Len) {
-            // 提前算好 UTF-8 字节,onLeave 直接用
-            if (utf8Len === 2) {
-                savedBytes.push([0xC0 | (cp >> 6), 0x80 | (cp & 0x3F)]);
-            } else {
-                savedBytes.push([
-                    0xE0 | (cp >> 12),
-                    0x80 | ((cp >> 6) & 0x3F),
-                    0x80 | (cp & 0x3F)
-                ]);
-            }
-
-            output[i] = (utf8Len === 3 ? FULL_WIDTH : HALF_WIDTH);
-            for (let j = 1; j < utf8Len; j++) output[i + j] = 0xF0;
-            i += utf8Len - 1;
-        } else {
-            output[i] = b0;
-        }
-    }
-    // output[strLen] 已经是 0 (Uint8Array 默认值)
-
-    savedA1Str.writeByteArray(output.buffer);
-    return savedBytes;
-}
-
-/**
- * 从 Buffer 中读取 UTF-8 序列并返回 BMP 码点 (Unicode Code Point)
- * @param {NativePointer} buf - Buffer 对象
- * @param {number} offset - 当前偏移量
- * @param {number} totalLen - Buffer 总长度
- * @returns {number} 成功返回 BMP 码点 (0x0000 - 0xFFFF)，非法或超出 BMP 返回 -1
- */
-function getBmpCodePoint(buf, offset, totalLen) {
-    if (offset >= totalLen) return -1;
-
-    const b0 = buf.add(offset).readU8();
-
-    // 1. ASCII 单字节（0x00-0x7F）
-    // 格式: 0xxxxxxx
-    if (b0 < 0x80) return b0;
-
-    // 续字节（0x80-0xBF）出现在起始位置：非法
-    if (b0 < 0xC0) return -1;
-
-    // 过长编码（0xC0-0xC1）：非法
-    if (b0 < 0xC2) return -1;
-
-    // 2. 确定序列长度并拒绝非 BMP 字符 (4字节及以上)
-    let seqLen;
-    if (b0 < 0xE0) {
-        seqLen = 2;
-    } else if (b0 < 0xF0) {
-        seqLen = 3;
-    } else {
-        // >= 0xF0 是 4 字节及以上的 UTF-8，超出了 BMP 范围 (U+FFFF)
-        return -1;
-    }
-
-    // 剩余字节不足
-    if (offset + seqLen > totalLen) return -1;
-
-    // 3. 解析 2 字节序列
-    // 格式: 110xxxxx 10xxxxxx
-    if (seqLen === 2) {
-        const b1 = buf.add(offset + 1).readU8();
-        if (b1 < 0x80 || b1 >= 0xC0) return -1; // 验证续字节
-
-        // 提取数据位并组合
-        return ((b0 & 0x1F) << 6) | (b1 & 0x3F);
-    }
-
-    // 4. 解析 3 字节序列
-    // 格式: 1110xxxx 10xxxxxx 10xxxxxx
-    if (seqLen === 3) {
-        const b1 = buf.add(offset + 1).readU8();
-        if (b1 < 0x80 || b1 >= 0xC0) return -1; // 验证续字节
-
-        // 针对 3 字节序列的额外约束
-        if (b0 === 0xE0 && b1 < 0xA0) return -1;   // 过长编码（< U+0800）
-        if (b0 === 0xED && b1 >= 0xA0) return -1;   // 代理对（U+D800-U+DFFF），在 UTF-8 中直接编码代理对是非法的
-
-        const b2 = buf.add(offset + 2).readU8();
-        if (b2 < 0x80 || b2 >= 0xC0) return -1; // 验证续字节
-
-        // 提取数据位并组合
-        return ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
-    }
-
-    return -1; // 兜底容错
-}
-
-
-
 
 main();
