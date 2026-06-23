@@ -13,6 +13,8 @@
     "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.mkdirSync('dist');fs.cpSync('assets','dist/assets',{recursive:true});fs.cpSync('index.js','dist/index.js');fs.cpSync('index.html','dist/index.html');fs.cpSync('package.json','dist/package.json');\" && frida-compile index.js -o dist/main.js",
     "build:package": "npm run build && node utils/pack.js",
     "dev": "npm run build && node utils/run.js",
+    "dev:fast:update:assets": "node -e \"require('child_process').execFile('reg',['query','HKLM\\\\SOFTWARE\\\\WOW6432Node\\\\Valve\\\\Steam','/v','InstallPath'],(e,o)=>{const m=o.match(/InstallPath\\s+REG_SZ\\s+(.+)/);const dest=m&&m[1].trim()+'\\\\steamapps\\\\common\\\\DeathRoadToCanada\\\\assets';console.log('Copying to:',dest);require('fs').cp('assets',dest,{recursive:true,force:true},err=>console.log(err||'Done'))})\"",
+    "dev:fast": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.mkdirSync('dist');fs.cpSync('index.js','dist/index.js');fs.cpSync('index.html','dist/index.html');fs.cpSync('package.json','dist/package.json');\" && frida-compile index.js -o dist/main.js && node utils/run.js",
     "dev:package": "npm run build:package && node utils/run.js",
     "dev:android": "npm run build && node utils/run-android.js com.noodlecake.drtc",
     "dev:android:package": "npm run build:package && cross-var adb push ./build/%npm_package_name%-%npm_package_version%.zip /storage/emulated/0/ && node utils/run-android.js com.noodlecake.drtc",
@@ -25,24 +27,30 @@
     "tag:prod": "cross-var git tag -f $npm_package_version",
     "copy-apk": "node -e \"require('fs').copyFileSync('./android/app/build/outputs/apk/release/app-release.apk', './build/modloader.apk')\"",
     "build:apk": "npm run tag:prod && npm run build && npx cap sync android && cd android && gradlew assembleRelease && npm run copy-apk",
-    "diff": "git diff > changes.patch"
+    "diff": "git diff > changes.patch",
+    "build:df": "node utils/build-df.js",
+    "build:df:update": "npm run build:df && npm run dev:fast:update:assets"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
     "@types/frida-gum": "^19.1.0",
     "cross-env": "^10.1.0",
     "cross-var": "^1.1.0",
     "deno": "^2.8.3",
-    "fs-extra": "^11.3.5",
-    "@capacitor/android": "^8.3.4",
-    "@capacitor/cli": "^8.3.4"
+    "fs-extra": "^11.3.5"
   },
   "dependencies": {
     "commander": "^15.0.0",
-    "frida": "^17.11.0",
+    "compromise": "^14.15.1",
+    "crypto": "^1.0.1",
+    "frida": "^17.15.0",
     "frida-fs": "^7.0.0",
     "frida-java-bridge": "^7.0.13",
+    "intl-messageformat": "^11.2.8",
     "jszip": "^3.10.1",
     "lzma-native": "^8.0.6",
+    "simhash-js": "^1.0.0",
     "undici": "^8.3.0",
     "xregexp": "^5.1.2"
   }

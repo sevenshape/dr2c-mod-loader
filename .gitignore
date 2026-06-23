@@ -4,3 +4,5 @@ build/
 dist/
 node_modules/
 note/
+assets/dr2c/
+.claude/

@@ -206,22 +206,6 @@ const getBmpCodePointNav = new NativeFunction(cm.getBmpCodePoint, 'int', [
  * @param {...any} args
  * @returns {void}
  */
-function log(...args) {
-    console.log('[+]', ...args);
-}
-
-/**
- * @param {...any} args
- * @returns {void}
- */
-function error(...args) {
-    console.error('[-]', ...args);
-}
-
-/**
- * @param {...any} args
- * @returns {void}
- */
 function info(...args) {
     console.info('[*]', ...args);
 }
@@ -230,8 +214,60 @@ function info(...args) {
  * @param {...any} args
  * @returns {void}
  */
+function log(...args) {
+    console.log('[+]', ...args);
+}
+
+/**
+ * 把参数格式化成「信息 + 堆栈帧」的字符串。
+ * @param {any[]} args
+ * @param {string} [fallbackStack] 无 Error 参数时使用的堆栈（由调用方抓取）
+ * @returns {string}
+ */
+function formatLog(args, fallbackStack) {
+    const fmt = (a) => {
+        if (a instanceof Error) return a.name + ': ' + a.message;
+        if (typeof a === 'string') return a;
+        if (a === null) return 'null';
+        if (a === undefined) return 'undefined';
+        const seen = new WeakSet();
+        try {
+            return JSON.stringify(a, (key, value) => {
+                if (typeof value === 'bigint') return value.toString();
+                if (value instanceof NativePointer) return value.toString();
+                if (value !== null && typeof value === 'object') {
+                    if (seen.has(value)) return '[Circular]';
+                    seen.add(value);
+                }
+                return value;
+            }, 2);
+        } catch (e) {
+            return String(a);
+        }
+    };
+
+    const errObj = args.find(a => a instanceof Error);
+    const rawStack = (errObj && errObj.stack) ? errObj.stack : (fallbackStack || new Error().stack);
+    const frames = rawStack.split('\n').filter(l => /^\s*at\s/.test(l)).join('\n');
+
+    return args.map(fmt).join(' ') + '\n' + frames;
+}
+
+/**
+ * @param {...any} args
+ * @returns {void}
+ */
 function warn(...args) {
-    console.warn('[!]', ...args);
+    console.warn('[!]', formatLog(args, new Error().stack));
+}
+
+/**
+ * @param {...any} args
+ * @returns {void}
+ */
+function error(...args) {
+    const body = formatLog(args, new Error().stack);
+    console.error('[-]', body);
 }
 
 /** @type {string} */
@@ -251,6 +287,8 @@ globalThis.applicationContext;
 /** @type {*} */
 // @ts-ignore
 globalThis.activity;
+globalThis.language = 'en';
+globalThis.checkMode = false;
 
 try {
     if (Process.getModuleByName('liblog.so')) {
@@ -332,7 +370,7 @@ var LANG_STR = Object.fromEntries(
     Object.entries({}).map(([k, v]) => [k, allocMixedString(v)])
 )
 /** @param {string} iso639_1  */
-function loadLangEx(iso639_1, override = false) {
+function loadLangEx(iso639_1 = globalThis.language, override = false) {
     const path = mod.dir + '/assets/lang.json';
     try {
         const s = File.readAllText(path);
@@ -346,7 +384,8 @@ function loadLangEx(iso639_1, override = false) {
         file.write(JSON.stringify(o, null, 4));
         file.close();
 
-        log('load lang', path, Object.keys(LANG_STR).length);
+        globalThis.language = o['selected_lang'];
+        log('load lang', path, Object.keys(LANG_STR).length, o['selected_lang']);
     } catch (e) {
         warn('loadLangEx', e);
     }
@@ -421,15 +460,20 @@ function main() {
             globalThis.modsDir = mod.dir + '/mods';
             const modsScript = loadMods(modsDir);
             if (modsScript.length === 0) {
+                // globalThis.checkMode = true;
                 loadLang();
+                hookI18n();
                 hook();
                 hookUtf8();
+                hookPerkExtend(globalThis.build_stamp);
             }
 
         } else {
             loadLang();
+            hookI18n();
             hook();
             hookUtf8();
+            hookPerkExtend(globalThis.build_stamp);
         }
     }
 
@@ -503,9 +547,244 @@ function main() {
             });
 }
 
-// ── 初始化 ────────────────────────────────────────────────────────────────────
-function hook() {
+function hookI18n() {
+    const fs_register_func = new NativeFunction(findSymbol('fs_register_func'), 'int', ['pointer', 'pointer', 'pointer', 'int']);
+    const fs_get_int = new NativeFunction(findSymbol('fs_get_int'), 'int', ['pointer', 'int']);
+    const fs_get_string = new NativeFunction(findSymbol('fs_get_string'), 'pointer', ['pointer', 'int']);
+    const fs_get_word_name = new NativeFunction(findSymbol('fs_get_word_name'), 'pointer', ['pointer', 'int']);
+    const fs_stack_depth = new NativeFunction(findSymbol('fs_stack_depth'), 'pointer', ['pointer', 'int']);
+    const fs_stack_size = new NativeFunction(findSymbol('fs_stack_size'), 'pointer', ['pointer', 'int']);
+    const fs_get_last_token = new NativeFunction(findSymbol('fs_get_last_token'), 'pointer', ['pointer']);
+    const fs_get_token = new NativeFunction(findSymbol('fs_get_token'), 'pointer', ['pointer', 'int']);
+    const fs_depth = new NativeFunction(findSymbol('fs_depth'), 'int', ['pointer']);
+    const fs_get_type = new NativeFunction(findSymbol('fs_depth'), 'int', ['pointer', 'int']);
 
+    const fs_get_float = new NativeFunction(findSymbol('fs_get_float'), 'double', ['pointer', 'int']);
+    const fs_remove = new NativeFunction(findSymbol('fs_remove'), 'int', ['pointer', 'int']);
+    const fs_push_string = new NativeFunction(findSymbol('fs_push_string'), 'int', ['pointer', 'pointer']);
+
+    const i18nPath = `${mod.dir}/assets/dr2c/i18n/${language}.json`;
+    let i18n = (() => { try { return JSON.parse(File.readAllText(i18nPath)); } catch (e) { warn('i18nHook', e); return JSON.parse(File.readAllText(`${mod.dir}/assets/dr2c/i18n/en.json`)); } })();
+    i18n.id = [];
+
+    i18n.args = {};
+    const colorNames = ["WHITE", "BLUE", "GREEN", "RED", "PURPLE", "SKULL", "FLICKER", "TOGGLE", "RAINBOW", "FLASHY", "BLINKY", "BOUNCY", "BOUNCY_OFF", "ROLLCLR", "BRIGHTER", "GLOW"];
+    colorNames.forEach((name, index) => {
+        i18n.args[name] = String.fromCharCode(0xE0F0 + index);
+    });
+
+    /**
+     * @param {string} template - 包含 {key} 占位符的模板字符串
+     * @param {Object<string, string|number>} [values={}] - 用于替换占位符的键值对
+     * @returns {string} 替换后的字符串。若占位符在 values 中不存在,则保留原样
+     */
+    function formatMessage(template, values = {}) {
+        // log(template, JSON.stringify(values));
+        return template.replace(/\{(\w+)\}/g, (match, key) => {
+            return key in values ? String(values[key]) : match;
+        });
+    }
+
+    Interceptor.attach(findSymbol('forth_init'), {
+        onEnter(args) {
+            this.a1 = args[0];
+        },
+        onLeave(retval) {
+            log('forth_init')
+            fs_register_func(this.a1, L('i18n.fmt'), navFun('i18n.fmt', () => {
+                const id = i18n.id.pop();
+                const str = readByteString(fs_get_string(this.a1, -1));
+
+                if (i18n[id]['template']) {
+                    const msg = formatMessage(i18n[id]['template'], i18n.args);
+                    fs_remove(this.a1, 1);
+                    fs_push_string(this.a1, L(msg));
+
+                    // if (str !== msg) {
+                    //     log('i18n.args', JSON.stringify(i18n.args));
+                    //     log('i18n.fmt', id, str, msg);
+                    // }
+                }
+                return 0;
+            }), 0);
+
+            fs_register_func(this.a1, L('i18n.arg!'), navFun('i18n.arg!', () => {
+                const idx = fs_get_float(this.a1, -1);
+                fs_remove(this.a1, 1);
+                const str = readByteString(fs_get_string(this.a1, -2));
+                i18n.args[`${idx}`] = str;
+                // log('i18n.arg.push', i18nArgsIdx, s);
+                return 0;
+            }), 0);
+
+            fs_register_func(this.a1, L('i18n.id!'), navFun('i18n.id!', () => {
+                const str = readByteString(fs_get_string(this.a1, -1));
+                fs_remove(this.a1, 1);
+                i18n.id.push(str);
+                return 0;
+            }), 0);
+
+            fs_register_func(this.a1, L('i18n.id@'), navFun('i18n.id@', () => {
+                i18n.id.pop();
+                return 0;
+            }), 0);
+
+            fs_register_func(this.a1, L('i18n.strlit!'), navFun('i18n.strlit!', () => {
+                const str = readByteString(fs_get_string(this.a1, -2));
+                const idx = fs_get_float(this.a1, -1);
+                fs_remove(this.a1, 2);
+                const id = i18n.id.at(-1);
+                if (globalThis.checkMode)
+                    fs_push_string(this.a1, L(`${id.slice(0, id.indexOf('.') + 7)}`));
+                else
+                    fs_push_string(this.a1, L(`${i18n[id]['strlits'][idx]}`));
+                return 0;
+            }), 0);
+        }
+    });
+
+
+    const button_ex = findSymbol('button_ex');
+    const plot_text = findSymbol('plot_text');
+    const btn_music_slider = findSymbol('btn_music_slider');
+    const main_stextf = findSymbol('main_stextf');
+    const snprintf = findSymbol('snprintf');
+    const chara_stat_name = findSymbol('chara_stat_name');
+
+    Interceptor.attach(chara_stat_name, {
+        onEnter(args) {
+            // if (args[0].isNull()) return;
+            this.a1 = args[0].toInt32();
+        },
+
+        onLeave(retval) {
+            if (this.returnAddress <= findSymbol('team_btn_char_stats')) return;
+            // log(`chara_stat_name ret: ${this.returnAddress}`);
+            const names = [
+                "morale",      // 0
+                "attitude",    // 1
+                "composure",   // 2
+                "charm",       // 3
+                "wits",        // 4
+                "loyalty",     // 5
+                "medical",     // 6
+                "mechanical",  // 7
+                "shooting",    // 8
+                "strength",    // 9
+                "dexterity",   // 10
+                "fitness",     // 11
+                "vitality"     // 12
+            ];
+            const str = (this.a1 >>> 0) > 0xC ? "invalid" : names[this.a1];
+            if (LANG_STR[str]) {
+                retval.replace(L(str));
+            }
+        }
+    });
+
+    if (Process.platform === 'linux' || Process.platform === 'darwin') {
+        Interceptor.attach(button_ex, {
+            onEnter(args) {
+                if (args[1].isNull()) return;
+                const str = readByteString(args[1]);
+                if (!str || !LANG_STR[str]) return;
+
+                args[1] = L(str);
+            }
+        });
+    } else if (Process.platform === 'windows') {
+        Interceptor.attach(button_ex, {
+            onEnter(args) {
+                if (args[3].isNull()) return;
+                const str = readByteString(args[3]);
+                if (!str || !LANG_STR[str]) return;
+
+                args[3] = L(str);
+            }
+        });
+        Interceptor.attach(plot_text, {
+            onEnter(args) {
+                if (args[0].isNull()) return;
+                const str = readByteString(args[0]);
+                if (!str || !LANG_STR[str]) return;
+
+                args[0] = L(str);
+            }
+        });
+        Interceptor.attach(findSymbol('main_btn_wrap'), {
+            onEnter(args) {
+                const a1 = args[0];
+                if (a1.isNull()) return;
+
+                const strPtr = a1.add(200).readPointer();
+                if (strPtr.isNull()) return;
+
+                const str = strPtr.readCString();
+                if (!str || !LANG_STR[str]) return;
+
+                a1.add(200).writePointer(L(str));
+            }
+        });
+    } else {
+        throw new Error(`Unsupported platform: ${Process.platform}`);
+    }
+
+
+    Interceptor.attach(btn_music_slider, {
+        onEnter(args) {
+            this.a1 = args[0]
+        },
+
+        onLeave(retval) {
+            if (this.a1.isNull()) return;
+
+            const str = readByteString(this.a1.add(200).readPointer());
+            if (!str || !LANG_STR[str]) return;
+
+            this.a1.add(200).writePointer(L(str));
+        }
+    });
+
+    Interceptor.attach(main_stextf, {
+        onEnter(args) {
+            const str = readByteString(args[0]);
+            if (!str || !LANG_STR[str]) return;
+            // log(`main_stextf ${str}`);
+            args[0] = LANG_STR[str];
+            const matches = str.match(/%./g);
+            if (!matches) return;
+            matches.forEach((item, index) => {
+                if (item === '%s') {
+                    const vastr = args[index + 1].readCString();
+                    if (vastr && LANG_STR[vastr]) {
+                        args[index + 1] = L(vastr);
+                    }
+                }
+            });
+        }
+    });
+
+    Interceptor.attach(snprintf, {
+        onEnter(args) {
+            const str = readByteString(args[2]);
+            if (!str || !LANG_STR[str]) return;
+            // log(`snprintf ${str}`);
+            args[2] = LANG_STR[str];
+            const matches = str.match(/%./g);
+            if (!matches) return;
+            matches.forEach((item, index) => {
+                if (item === '%s') {
+                    const vastr = args[index + 3].readCString();
+                    if (vastr && LANG_STR[vastr]) {
+                        args[index + 3] = L(vastr);
+                    }
+                }
+            });
+        }
+    });
+}
+
+function hook() {
     var START = '\uE0F5\uE0FB\uE0E7\uE0F0\uE0FC  START  \uE0F5\uE0FB\uE0E7\uE0FC';
     const button_ex = new NativeFunction(findSymbol('button_ex'), 'pointer', ['float', 'float', 'int', 'pointer', 'pointer']);
     Interceptor.replace(button_ex, new NativeCallback(function (a1, a2, a3, a4, a5) {
@@ -514,12 +793,12 @@ function hook() {
 
         const str = readByteString(a4);
 
-        if (str === START || (LANG_STR[START] && a4.equals(LANG_STR[START]))) {
+        if (str === START || a4.equals(L(START))) {
             const btn = button_ex(a1, a2 - 1, 0, L("Mods"), findSymbol('main_btn_data_func'));
             setOnClickListenerEx(btn, modCallback);
         }
 
-        if (str === 'Fast Text' || (LANG_STR['Fast Text'] && a4.equals(LANG_STR['Fast Text']))) {
+        if (str === 'Fast Text' || a4.equals(L('Fast Text'))) {
             const btn = button_ex(a1, a2 + 2, 0, L("Language"), findSymbol('main_btn_data_func'));
             setOnClickListenerEx(btn, navFun('langCall', () => {
                 const main_trigger_event = new NativeFunction(findSymbol('main_trigger_event'), 'int', ['int']);
@@ -728,6 +1007,7 @@ function hook() {
             setOnClickListener(btn_install,
                 async () => {
 
+                    info('btn_install');
                     const path1 = await filedialog();
                     log('selected', JSON.stringify(path1));
                     if (!path1) return;
@@ -760,9 +1040,15 @@ function hook() {
                             fs.mkdirSync(mdir);
 
                             File.writeAllText(`${mdir}/package.json`, s1);
+
                             const jsfile = zip.file('index.js');
                             if (jsfile)
                                 File.writeAllText(`${mdir}/index.js`, await jsfile.async('text'));
+
+                            const mainfile = zip.file('main.js');
+                            if (mainfile)
+                                File.writeAllText(`${mdir}/main.js`, await mainfile.async('text'));
+
                             for (const path of Object.keys(zip.files)) {
                                 const entry = zip.files[path];
                                 if (path.startsWith('assets/')) {
@@ -879,36 +1165,38 @@ function hook() {
         'uint',  // 返回值: LRESULT
         []
     );
+
+    info('hook inited');
 }
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 function hookUtf8() {
     // ── 适配不同的build_stamp ─────────────────────────────────────────
     const main_build_stamp = new NativeFunction(findSymbol('main_build_stamp'), 'pointer', []);
-    const build_stamp = main_build_stamp().readCString();
+    globalThis.build_stamp = main_build_stamp().readCString();
 
     /** @type {NativePointer} */
     let load_gfx;
     /** @type {NativePointer} */
     let btn_music_slider;
 
-    switch (build_stamp) {
+    switch (globalThis.build_stamp) {
         case 'OCT-15-2025.15.11':
             load_gfx = globalThis.mainModule.base.add(0xEE0FC);
             btn_music_slider = globalThis.mainModule.base.add(0x100F64);
-            log('main_build_stamp', build_stamp);
+            log('main_build_stamp', globalThis.build_stamp);
             break;
 
         case 'MAY-04-2023.09.30':
             load_gfx = globalThis.mainModule.base.add(0xB07D4);
             btn_music_slider = globalThis.mainModule.base.add(0xC4D98);
-            log('main_build_stamp', build_stamp);
+            log('main_build_stamp', globalThis.build_stamp);
             break;
 
         default:
             load_gfx = findSymbol('load_gfx');
             btn_music_slider = findSymbol('btn_music_slider');
-            log('main_build_stamp', build_stamp);
+            log('main_build_stamp', globalThis.build_stamp);
             break;
     }
 
@@ -937,7 +1225,8 @@ function hookUtf8() {
     const text_w = new NativeFunction(findSymbol('text_w'), 'int', ['pointer']);
     const chara_stat_name = new NativeFunction(findSymbol('chara_stat_name'), 'pointer', ['int']);
     const button_ex = new NativeFunction(findSymbol('button_ex'), 'pointer', ['float', 'float', 'int', 'pointer', 'pointer']);
-    const fs_pop_string = new NativeFunction(findSymbol('fs_pop_string'), 'pointer', ['pointer']);
+    const plot_text = new NativeFunction(findSymbol('plot_text'), 'int', ['pointer', 'pointer']);
+    const plot_text_ex = new NativeFunction(findSymbol('plot_text_ex'), 'int', ['pointer', 'pointer', 'int', 'pointer']);
     const main_stextf = findSymbol('main_stextf');
     const snprintf = findSymbol('snprintf');
     const WRAP_TEXT_EX = new NativeFunction(findSymbol('wrap_text_ex'), 'pointer', ['pointer', 'int', 'int']);
@@ -1131,7 +1420,8 @@ function hookUtf8() {
             retval.replace(ptr(v151));
             if (font_base_id === SPRITE_COUNT()) {
                 font_base_id = 0;
-                throw new Error('字体图集加载失败');
+                warn('load_gfx_hook', 'Failed to load font.');
+                return;
             }
             unifont = SPRITE_GET(font_base_id);
             unifont_x = unifont.readU16();
@@ -1274,129 +1564,24 @@ function hookUtf8() {
         }
     });
 
-    Interceptor.attach(chara_stat_name, {
-        onEnter(args) {
-            // if (args[0].isNull()) return;
-            this.a1 = args[0].toInt32();
-        },
-
-        onLeave(retval) {
-            if (this.returnAddress <= findSymbol('team_btn_char_stats')) return;
-            // log(`chara_stat_name ret: ${this.returnAddress}`);
-            const names = [
-                "morale",      // 0
-                "attitude",    // 1
-                "composure",   // 2
-                "charm",       // 3
-                "wits",        // 4
-                "loyalty",     // 5
-                "medical",     // 6
-                "mechanical",  // 7
-                "shooting",    // 8
-                "strength",    // 9
-                "dexterity",   // 10
-                "fitness",     // 11
-                "vitality"     // 12
-            ];
-            const str = (this.a1 >>> 0) > 0xC ? "invalid" : names[this.a1];
-            if (LANG_STR[str]) {
-                retval.replace(LANG_STR[str]);
-            }
-        }
-    });
-
-    if (Process.platform === 'linux') {
-        Interceptor.attach(button_ex, {
-            onEnter(args) {
-                if (args[1].isNull()) return;
-                const str = readByteString(args[1]);
-                if (!str || !LANG_STR[str]) return;
-                args[1] = LANG_STR[str];
-            }
-        });
-    } else if (Process.platform === 'windows') {
-        Interceptor.attach(button_ex, {
-            onEnter(args) {
-                if (args[3].isNull()) return;
-                const str = readByteString(args[3]);
-                if (!str || !LANG_STR[str]) return;
-                args[3] = LANG_STR[str];
-            }
-        });
-    } else if (Process.platform === 'darwin') {
-        Interceptor.attach(button_ex, {
-            onEnter(args) {
-                if (args[1].isNull()) return;
-                const str = readByteString(args[1]);
-                if (!str || !LANG_STR[str]) return;
-                args[1] = LANG_STR[str];
-            }
-        });
-    } else {
-        throw new Error(`Unsupported platform: ${Process.platform}`);
-    }
+    log('hookUtf8 inited');
+}
 
 
-    Interceptor.attach(btn_music_slider, {
-        onEnter(args) {
-            this.a1 = args[0]
-        },
-
-        onLeave(retval) {
-            if (this.a1.isNull()) return;
-
-            const str = readByteString(this.a1.add(200).readPointer());
-            if (!str || !LANG_STR[str]) return;
-            this.a1.add(200).writePointer(LANG_STR[str]);
-        }
-    });
-
-    Interceptor.attach(main_stextf, {
-        onEnter(args) {
-            const str = readByteString(args[0]);
-            if (!str || !LANG_STR[str]) return;
-            // log(`main_stextf ${str}`);
-            args[0] = LANG_STR[str];
-            const matches = str.match(/%./g);
-            if (!matches) return;
-            matches.forEach((item, index) => {
-                if (item === '%s') {
-                    const vastr = args[index + 1].readCString();
-                    if (vastr && LANG_STR[vastr])
-                        args[index + 1] = LANG_STR[vastr];
-                }
-            });
-        }
-    });
-
-    Interceptor.attach(snprintf, {
-        onEnter(args) {
-            const str = readByteString(args[2]);
-            if (!str || !LANG_STR[str]) return;
-            // log(`snprintf ${str}`);
-            args[2] = LANG_STR[str];
-            const matches = str.match(/%./g);
-            if (!matches) return;
-            matches.forEach((item, index) => {
-                if (item === '%s') {
-                    const vastr = args[index + 3].readCString();
-                    if (vastr && LANG_STR[vastr])
-                        args[index + 3] = LANG_STR[vastr];
-                }
-            });
-        }
-    });
+/**
+ * @param {string} build_stamp 
+ */
+function hookPerkExtend(build_stamp) {
+    const fs_pop_string = new NativeFunction(findSymbol('fs_pop_string'), 'pointer', ['pointer']);
 
     /** @type {NativePointer[]} */
     const perkDesc = [];
     if (build_stamp === 'MAY-04-2023.09.30') {
         /** @param {number} offset @param {number[]} arr  */
         function repAss(offset, arr) {
-            // log("修改前:", Instruction.parse(globalThis.mainModule.base.add(offset)).toString());
             Memory.patchCode(globalThis.mainModule.base.add(offset), arr.length, code => {
                 code.writeByteArray(arr);
             });
-            // log("修改后:", Instruction.parse(globalThis.mainModule.base.add(offset)).toString());
         }
 
 
@@ -1474,9 +1659,9 @@ function hookUtf8() {
           C6CEC                 MOV             X13, #0x140 : 0d 14 80 d2
           C6C58                 MOV             X13, #0x140 : 0d 14 80 d2
         btn_perk sub_C6E48 里面第二部分逻辑在sub_C7298
-
+ 
         do_perk_desc sub_C70F4
-
+ 
         perkntrait_find
           C61F8                 MOV             X10, #0x140 : 0a 14 80 d2*/
 
@@ -1548,9 +1733,6 @@ function hookUtf8() {
         log('perks 扩展完成');
 
     }
-
-
-    log('hook 初始化完成');
 }
 
 /** @type {Object<string, NativePointer>} */
@@ -1558,7 +1740,10 @@ const strList = {};
 /** @param {string} str @returns {NativePointer} */
 function L(str) {
     if (LANG_STR[str]) {
-        return LANG_STR[str];
+        if (globalThis.checkMode)
+            str = `code-str.${Object.keys(LANG_STR).indexOf(str)}`
+        else
+            return LANG_STR[str];
     }
     if (!strList[str]) {
         const str_p = allocMixedString(str);
@@ -1747,46 +1932,29 @@ const SYMBOLS_JSON_STR = '{"__mingw32_init_mainargs": "0x4012a0", "_mainCRTStart
 async function filedialog() {
     if (Process.platform === 'linux' && isAndroid) {
         log('filedialog start')
-
-        // 1. 准备需要用到的 Java 类
         var Intent = Java.use('android.content.Intent');
         var Activity = Java.use('android.app.Activity');
-
-
         return new Promise((resolve, reject) => {
-            /**
-            * @param {*} activity 
-            * @param {*} uri 
-            * @returns {*} 
-            */
             function dumpFromUri(activity, uri) {
                 var File = Java.use('java.io.File');
                 var FileOutputStream = Java.use('java.io.FileOutputStream');
-
                 var input = activity.getContentResolver().openInputStream(uri);
                 if (input === null) { reject(new Error('Failed to openInputStream from dumpFromUri')); return null; }
-
                 var dst = File.$new(activity.getCacheDir(), 'sel.zip');
                 var fos = FileOutputStream.$new(dst);
                 var buf = Java.array('byte', new Array(8192).fill(0));
                 var n;
                 while ((n = input.read(buf)) > 0) fos.write(buf, 0, n);
                 fos.close(); input.close();
-
                 log('dump 到:', dst.getAbsolutePath());
                 return dst.getAbsolutePath();
             }
-
             const activity = getActivity();
-            /** @type {*} */
             var originalOnActivityResult;
-
             try {
-                // 先尝试旧版本重载（3个参数）
                 originalOnActivityResult = activity.onActivityResult.overload('int', 'int', 'android.content.Intent');
                 log('使用旧版 onActivityResult（3个参数）');
             } catch (e) {
-                // 如果失败，尝试新版本重载（4个参数）
                 try {
                     originalOnActivityResult = activity.onActivityResult.overload('int', 'int', 'android.content.Intent', 'android.app.ComponentCaller');
                     log('使用新版 onActivityResult（4个参数）');
@@ -1795,15 +1963,7 @@ async function filedialog() {
                     reject(new Error('无法找到合适的 onActivityResult 重载'));
                 }
             }
-
-            // 替换实现
             activity.onActivityResult.implementation =
-                /**
-                 * @param {*} requestCode 
-                 * @param {*} resultCode 
-                 * @param {*} data 
-                 * @returns {*} 
-                 */
                 function (requestCode, resultCode, data) {
                     if (requestCode === 1234) {
                         if (resultCode === Activity.RESULT_OK.value && data !== null) {
@@ -1811,7 +1971,6 @@ async function filedialog() {
                             log('\n========== 文件选择结果 ==========');
                             log('Uri:', uri.toString());
                             log('路径:', uri.getPath());
-
                             const modDir = dumpFromUri(activity, uri);
                             resolve(modDir);
                             log('===================================\n');
@@ -1820,39 +1979,220 @@ async function filedialog() {
                             reject(new Error('No file selected'));
                         }
                     }
-
-                    // 调用原始方法
                     return originalOnActivityResult.call(this, requestCode, resultCode, data);
                 };
             log('onActivityResult Hook 成功');
-
-            // ========== 2. 然后打开文件选择器 ==========
             var intent = Intent.$new();
             intent.setAction(Intent.ACTION_GET_CONTENT.value);
             intent.setType('application/zip');
             intent.addCategory(Intent.CATEGORY_OPENABLE.value);
-
             activity.startActivityForResult(intent, 1234);
             log('文件选择器已打开');
         });
+    } else if (Process.platform === 'windows') {
+        // ===== Windows：CreateProcessW 直接拉 powershell.exe，匿名管道读 stdout，无 cmd 中转 =====
+        const title = 'Install Mod From File';
 
-    } else {
-        // 发送消息给 Python
-        send({ type: "filedialog" });
+        const k32 = Process.getModuleByName('kernel32.dll');
+        const CreateProcessW = new NativeFunction(k32.getExportByName('CreateProcessW'), 'int', ['pointer', 'pointer', 'pointer', 'pointer', 'int', 'uint32', 'pointer', 'pointer', 'pointer', 'pointer']);
+        const CreatePipe = new NativeFunction(k32.getExportByName('CreatePipe'), 'int', ['pointer', 'pointer', 'pointer', 'uint32']);
+        const ReadFile = new NativeFunction(k32.getExportByName('ReadFile'), 'int', ['pointer', 'pointer', 'uint32', 'pointer', 'pointer']);
+        const CloseHandle = new NativeFunction(k32.getExportByName('CloseHandle'), 'int', ['pointer']);
+        const WaitForSingleObject = new NativeFunction(k32.getExportByName('WaitForSingleObject'), 'uint32', ['pointer', 'uint32']);
+        const SetHandleInformation = new NativeFunction(k32.getExportByName('SetHandleInformation'), 'int', ['pointer', 'uint32', 'uint32']);
 
-        // 等待 Python 回复
+        const HANDLE_FLAG_INHERIT = 0x1;
+        const STARTF_USESTDHANDLES = 0x100;
+        const CREATE_NO_WINDOW = 0x08000000;
+        const INFINITE = 0xFFFFFFFF;
+        const is64 = Process.pointerSize === 8;
+
+        const escTitle = title.replace(/'/g, "''");
+        const ps =
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+            "Add-Type -AssemblyName System.Windows.Forms; " +
+            "$owner = New-Object System.Windows.Forms.Form; " +
+            "$owner.TopMost = $true; " +
+            "$owner.ShowInTaskbar = $false; " +
+            "$owner.WindowState = 'Minimized'; " +
+            "$owner.Opacity = 0; " +
+            "$owner.Show(); $owner.Hide(); " +
+            "[System.Windows.Forms.Application]::DoEvents(); " +
+            "$owner.Activate(); " +
+            "$f = New-Object System.Windows.Forms.OpenFileDialog; " +
+            "$f.Title = '" + escTitle + "'; " +
+            "$f.Filter = 'ZIP files (*.zip)|*.zip'; " +
+            "$f.Multiselect = $false; " +
+            "$result = $f.ShowDialog($owner); " +
+            "$owner.Dispose(); " +
+            "if ($result -eq 'OK') { [Console]::Out.Write($f.FileName) }";
+
+        const b64 = base64(encodeUtf16Le(ps));
+        const cmdline = 'powershell.exe -NoProfile -NonInteractive -NoLogo -Sta -EncodedCommand ' + b64;
+
         return new Promise((resolve, reject) => {
-            recv("filedialog", function (obj) {
-                log("Python:", JSON.stringify(obj));
+            try {
+                // 1. SECURITY_ATTRIBUTES { DWORD nLength; LPVOID lpsd; BOOL bInheritHandle; }
+                const saSize = is64 ? 24 : 12;
+                const sa = Memory.alloc(saSize);
+                sa.writeU32(saSize);                                  // nLength
+                sa.add(is64 ? 8 : 4).writePointer(NULL);             // lpSecurityDescriptor
+                sa.add(is64 ? 16 : 8).writeU32(1);                   // bInheritHandle = TRUE
 
-                if (obj.success) {
-                    resolve(obj.result);
-                } else {
-                    reject(new Error(obj.error || "Failed to open filedialog"));
+                // 2. 创建匿名管道（子进程 stdout -> 我们读）
+                const hReadPtr = Memory.alloc(Process.pointerSize);
+                const hWritePtr = Memory.alloc(Process.pointerSize);
+                if (CreatePipe(hReadPtr, hWritePtr, sa, 0) === 0) {
+                    reject(new Error('CreatePipe 失败')); return;
                 }
-            });
+                const hRead = hReadPtr.readPointer();
+                const hWrite = hWritePtr.readPointer();
+                // 读端不被子进程继承
+                SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+                // 3. STARTUPINFOW
+                //    64位: cb(4)+pad(4)+9指针(72)+ 4DWORD(16)+2WORD(4)+pad(4)+pStdIn/Out/Err(24) = 0x68
+                const siSize = is64 ? 104 : 68;
+                const si = Memory.alloc(siSize);
+                si.writeU32(siSize);                                  // cb
+                // dwFlags 偏移：64位 = 60, 32位 = 44
+                const dwFlagsOff = is64 ? 60 : 44;
+                si.add(dwFlagsOff).writeU32(STARTF_USESTDHANDLES);
+                // hStdInput/Output/Error 偏移：64位 = 80/88/96, 32位 = 56/60/64
+                const stdHandlesOff = is64 ? 80 : 56;
+                si.add(stdHandlesOff + 0 * Process.pointerSize).writePointer(NULL);    // hStdInput
+                si.add(stdHandlesOff + 1 * Process.pointerSize).writePointer(hWrite);  // hStdOutput
+                si.add(stdHandlesOff + 2 * Process.pointerSize).writePointer(NULL);    // hStdError
+
+                // 4. PROCESS_INFORMATION { hProcess; hThread; dwPid; dwTid; }
+                const pi = Memory.alloc(is64 ? 24 : 16);
+
+                // 5. lpCommandLine 必须可写
+                const cmdBuf = Memory.allocUtf16String(cmdline);
+
+                const ok = CreateProcessW(
+                    NULL,            // lpApplicationName
+                    cmdBuf,          // lpCommandLine（可写）
+                    NULL, NULL,      // proc/thread security
+                    1,               // bInheritHandles = TRUE
+                    CREATE_NO_WINDOW,// dwCreationFlags（不弹控制台黑窗）
+                    NULL,            // lpEnvironment
+                    NULL,            // lpCurrentDirectory
+                    si, pi
+                );
+                if (ok === 0) {
+                    CloseHandle(hRead); CloseHandle(hWrite);
+                    reject(new Error('CreateProcessW 失败')); return;
+                }
+
+                const hProcess = pi.readPointer();
+                const hThread = pi.add(Process.pointerSize).readPointer();
+                // 写端在父进程必须关闭，否则 ReadFile 永远阻塞
+                CloseHandle(hWrite);
+
+                // 6. 读 stdout
+                let out = '';
+                const bufSize = 4096;
+                const buf = Memory.alloc(bufSize);
+                const readBytes = Memory.alloc(4);
+                while (true) {
+                    const r = ReadFile(hRead, buf, bufSize, readBytes, NULL);
+                    const n = readBytes.readU32();
+                    if (r === 0 || n === 0) break;
+                    out += buf.readUtf8String(n);
+                }
+
+                WaitForSingleObject(hProcess, INFINITE);
+                CloseHandle(hRead);
+                CloseHandle(hProcess);
+                CloseHandle(hThread);
+
+                const path = out.replace(/\r?\n/g, '').trim();
+                if (!path) { reject(new Error('No file selected')); return; }
+                log('选择的文件:', path);
+                resolve(path);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    } else {
+        // ===== macOS / Linux桌面：popen 调 osascript / zenity =====
+        const title = 'Install Mod From File';
+
+        const popen = new NativeFunction(Module.getGlobalExportByName('popen'), 'pointer', ['pointer', 'pointer']);
+        const pclose = new NativeFunction(Module.getGlobalExportByName('pclose'), 'int', ['pointer']);
+        const fgets = new NativeFunction(Module.getGlobalExportByName('fgets'), 'pointer', ['pointer', 'int', 'pointer']);
+
+        function runCmd(cmd) {
+            const fp = popen(Memory.allocUtf8String(cmd), Memory.allocUtf8String('r'));
+            if (fp.isNull()) throw new Error('popen 失败');
+            let out = '';
+            const buf = Memory.alloc(4096);
+            while (!fgets(buf, 4096, fp).isNull()) out += buf.readUtf8String();
+            pclose(fp);
+            return out.replace(/\r?\n/g, '').trim();
+        }
+
+        return new Promise((resolve, reject) => {
+            try {
+                let path = '';
+                if (Process.platform === 'darwin') {
+                    const escTitle = title.replace(/"/g, '\\"');
+                    const script =
+                        'try\n' +
+                        '  set f to choose file with prompt "' + escTitle + '" of type {"zip", "public.zip-archive"}\n' +
+                        '  return POSIX path of f\n' +
+                        'on error\n' +
+                        '  return ""\n' +
+                        'end try';
+                    const cmd = 'osascript ' + script.split('\n').map(l => '-e ' + shellQuote(l)).join(' ');
+                    path = runCmd(cmd);
+                } else {
+                    const cmd = 'zenity --file-selection ' +
+                        shellQuote('--title=' + title) + ' ' +
+                        shellQuote('--file-filter=ZIP files | *.zip');
+                    path = runCmd(cmd);
+                }
+                if (!path) { reject(new Error('No file selected')); return; }
+                log('选择的文件:', path);
+                resolve(path);
+            } catch (e) {
+                reject(new Error('No file selected'));
+            }
         });
     }
+}
+
+// ===== 辅助函数 =====
+
+/** POSIX 单引号转义 */
+function shellQuote(s) {
+    return "'" + s.replace(/'/g, `'\\''`) + "'";
+}
+
+/** 字符串转 UTF-16LE 字节数组 */
+function encodeUtf16Le(str) {
+    const bytes = [];
+    for (let i = 0; i < str.length; i++) {
+        const c = str.charCodeAt(i);
+        bytes.push(c & 0xff, (c >> 8) & 0xff);
+    }
+    return bytes;
+}
+
+/** 字节数组 base64 编码（无 Buffer 环境） */
+function base64(bytes) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+        const b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];
+        const hasB1 = i + 1 < bytes.length, hasB2 = i + 2 < bytes.length;
+        out += chars[b0 >> 2];
+        out += chars[((b0 & 3) << 4) | (hasB1 ? (b1 >> 4) : 0)];
+        out += hasB1 ? chars[((b1 & 15) << 2) | (hasB2 ? (b2 >> 6) : 0)] : '=';
+        out += hasB2 ? chars[b2 & 63] : '=';
+    }
+    return out;
 }
 
 /**
@@ -1887,30 +2227,38 @@ function mkdirSync(path) {
             if (!dir.exists()) {
                 const success = dir.mkdirs();
                 if (!success) throw new Error("目录创建失败: " + path);
-                // log("目录创建成功:", path);
                 result = success;
             } else {
-                // log("目录已存在:", path);
                 result = true;
             }
         });
         return result;
-    } else {
-        send({ type: "mkdir", data: { path: path } });
+    } else if (Process.platform === 'windows') {
+        const SHCreateDirectoryExW = new NativeFunction(
+            Process.getModuleByName('shell32.dll').getExportByName('SHCreateDirectoryExW'),
+            'int', ['pointer', 'pointer', 'pointer']
+        );
+        const ERROR_SUCCESS = 0;
+        const ERROR_ALREADY_EXISTS = 183;
+        const ERROR_FILE_EXISTS = 80;
 
-        /** @type {*} */
-        let response = null;
-        const op = recv("mkdir", function (obj) {
-            response = obj;
-        });
-        op.wait();   // 阻塞,直到上面的回调被触发
+        const wpath = Memory.allocUtf16String(path);
+        const ret = SHCreateDirectoryExW(NULL, wpath, NULL);
 
-        // log("Python:", JSON.stringify(response));
-        if (response.success) {
-            return response;
-        } else {
-            throw new Error(response.error || "目录创建失败");
+        if (ret === ERROR_SUCCESS || ret === ERROR_ALREADY_EXISTS || ret === ERROR_FILE_EXISTS) {
+            return true;
         }
+        throw new Error("目录创建失败: " + path + " (code: " + ret + ")");
+    } else {
+        // macOS / 非 Android Linux：全局查找用 getGlobalExportByName
+        const system = new NativeFunction(
+            Module.getGlobalExportByName('system'),
+            'int', ['pointer']
+        );
+        const safe = path.replace(/'/g, `'\\''`);
+        const ret = system(Memory.allocUtf8String(`mkdir -p '${safe}'`));
+        if (ret !== 0) throw new Error("目录创建失败: " + path + " (code: " + ret + ")");
+        return true;
     }
 }
 
