@@ -22,79 +22,6 @@ const cm = new CModule(`
 #include <stdint.h>
 #include <string.h>
 
-int
-markChar (const uint8_t * restrict input,
-             uint8_t * restrict output,
-             int FULL_WIDTH,
-             int HALF_WIDTH,
-             uint8_t * restrict markCharUni,
-             int fillChar)
-{
-  int len = 0;
-  const uint8_t fw = (uint8_t) FULL_WIDTH;
-  const uint8_t hw = (uint8_t) HALF_WIDTH;
-  const uint8_t fc = (uint8_t) fillChar;
-  const uint8_t *p = input;
-  uint8_t *out = output;
-
-  uint8_t b0;
-  while ((b0 = *p) != 0)
-  {
-    if (b0 < 0x80)                      /* ASCII (最常见，最先判断) */
-    {
-      *out++ = b0;
-      p++;
-      continue;
-    }
-
-    if (b0 >= 0xC2 && b0 < 0xE0)        /* 2 字节 */
-    {
-      uint8_t b1 = p[1];
-      if ((b1 & 0xC0) == 0x80)
-      {
-        markCharUni[len]     = b0;
-        markCharUni[len + 1] = b1;
-        markCharUni[len + 2] = 0;
-        len += 3;
-        out[0] = fc;
-        out[1] = hw;
-        out += 2;
-        p += 2;
-        continue;
-      }
-    }
-    else if (b0 >= 0xE0 && b0 < 0xF0)   /* 3 字节 */
-    {
-      uint8_t b1 = p[1];
-      if ((b1 & 0xC0) == 0x80 &&
-          !(b0 == 0xE0 && b1 < 0xA0) &&
-          !(b0 == 0xED && b1 >= 0xA0))
-      {
-        uint8_t b2 = p[2];
-        if ((b2 & 0xC0) == 0x80)
-        {
-          markCharUni[len]     = b0;
-          markCharUni[len + 1] = b1;
-          markCharUni[len + 2] = b2;
-          len += 3;
-          out[0] = fc;
-          out[1] = fc;
-          out[2] = fw;
-          out += 3;
-          p += 3;
-          continue;
-        }
-      }
-    }
-
-    *out++ = b0;                        /* 非法序列 */
-    p++;
-  }
-
-  *out = 0;
-  return len;
-}
-
 int getBmpCodePoint (const uint8_t *buf, int offset, int totalLen)
 {
   if (offset >= totalLen)
@@ -145,43 +72,6 @@ int getBmpCodePoint (const uint8_t *buf, int offset, int totalLen)
 `);
 
 /**
- * @brief 标记并替换 UTF-8 字符串中的多字节字符
- *
- * 遍历输入的 UTF-8 字符串，将所有有效的 2 字节、3 字节 UTF-8 字符
- * 替换为指定填充字符构成的占位序列，同时将被替换的原始字节序列
- * 保存到 markCharUni 数组中。ASCII 字符原样保留，非法 UTF-8 序列
- * 的首字节也原样保留。
- *
- * @param input         输入字符串，以 '\0' 结尾的 UTF-8 编码字节流
- * @param output        输出缓冲区，存放替换后的字符串（调用者需确保空间足够：
- *                      ASCII 字符 1:1 复制；2字节字符变为 2 字节填充；
- *                      3字节字符变为 3 字节填充）
- * @param FULL_WIDTH    全角字符（3字节）的第三个填充字节
- * @param HALF_WIDTH    半角宽字符（2字节）的第二个填充字节
- * @param markCharUni   输出缓冲区，连续存放所有被替换字符的原始 UTF-8 字节序列，
- *                      每个序列后追加一个 '\0' 作为分隔符。
- *                      例如：被替换一个 2字节序列，写入 b0, b1, 0x00 共 3 字节
- * @param fillChar      填充字符的主字节，用于替换序列的第1和第2字节（3字节时）
- *
- * @return              写入 markCharUni 的总字节数（包含分隔符 '\0'）。
- *                      若返回 0，表示未替换任何多字节字符。
- *
- * @note  本函数只处理 2 字节（U+0080 ~ U+07FF）和 3 字节（U+0800 ~ U+FFFF）
- *        的 UTF-8 字符。4 字节序列（U+10000 以上）不会被识别，其首字节
- *        会被当作非法序列处理。
- * @note  对 2 字节序列的合法性做了基本校验（检查 C2~DF 范围及后续字节格式），
- *        对 3 字节序列额外排除了超长编码（E0 A0~BF）和 UTF-16 代理区（ED A0~BF）。
- */
-const markCharNav = new NativeFunction(cm.markChar, 'int', [
-    'pointer', // input
-    'pointer', // output
-    'int',     // FULL_WIDTH
-    'int',     // HALF_WIDTH
-    'pointer', // markCharUni
-    'int'      // fillChar
-]);
-
-/**
  * @brief 从 buffer 读取一个 UTF-8 序列，返回 BMP 码点
  *
  * 解析 buffer 中从 offset 位置开始的 UTF-8 字节序列，将其解码为
@@ -202,12 +92,27 @@ const getBmpCodePointNav = new NativeFunction(cm.getBmpCodePoint, 'int', [
     'int'
 ]);
 
+function formatArg(a) {
+    if (typeof a === 'string') return a;
+    if (a instanceof ArrayBuffer) return hexdump(a);  // Frida 场景常有 ArrayBuffer
+    try {
+        return JSON.stringify(a);
+    } catch (e) {
+        return String(a);  // 兜底，处理循环引用等 JSON 失败的情况
+    }
+}
+
 /**
  * @param {...any} args
  * @returns {void}
  */
 function info(...args) {
     console.info('[*]', ...args);
+    if (globalThis.logFile) {
+        const message = args.map(formatArg).join(' ');
+        globalThis.logFile.write('[*] ' + message + '\n');
+        globalThis.logFile.flush();
+    }
 }
 
 /**
@@ -216,6 +121,11 @@ function info(...args) {
  */
 function log(...args) {
     console.log('[+]', ...args);
+    if (globalThis.logFile) {
+        const message = args.map(formatArg).join(' ');
+        globalThis.logFile.write('[+] ' + message + '\n');
+        globalThis.logFile.flush();
+    }
 }
 
 /**
@@ -258,7 +168,12 @@ function formatLog(args, fallbackStack) {
  * @returns {void}
  */
 function warn(...args) {
-    console.warn('[!]', formatLog(args, new Error().stack));
+    const message = formatLog(args, new Error().stack);
+    console.warn('[!]', message);
+    if (globalThis.logFile) {
+        globalThis.logFile.write('[!] ' + message + '\n');
+        globalThis.logFile.flush();
+    }
 }
 
 /**
@@ -266,8 +181,12 @@ function warn(...args) {
  * @returns {void}
  */
 function error(...args) {
-    const body = formatLog(args, new Error().stack);
-    console.error('[-]', body);
+    const message = formatLog(args, new Error().stack);
+    console.error('[-]', message);
+    if (globalThis.logFile) {
+        globalThis.logFile.write('[-] ' + message + '\n');
+        globalThis.logFile.flush();
+    }
 }
 
 /** @type {string} */
@@ -288,6 +207,7 @@ globalThis.applicationContext;
 // @ts-ignore
 globalThis.activity;
 globalThis.language = 'en';
+globalThis.i18n = {};
 globalThis.checkMode = false;
 
 try {
@@ -369,6 +289,8 @@ function loadMods(modsDir) {
 var LANG_STR = Object.fromEntries(
     Object.entries({}).map(([k, v]) => [k, allocMixedString(v)])
 )
+/** @type {{ [key: string]: string }} */
+var LANG = {}
 /** @param {string} iso639_1  */
 function loadLangEx(iso639_1 = globalThis.language, override = false) {
     const path = mod.dir + '/assets/lang.json';
@@ -376,8 +298,9 @@ function loadLangEx(iso639_1 = globalThis.language, override = false) {
         const s = File.readAllText(path);
         const o = JSON.parse(s);
         if (!o['selected_lang'] || override) o['selected_lang'] = iso639_1;
+        LANG = o['string_literal'][o['selected_lang']];
         LANG_STR = Object.fromEntries(
-            Object.entries(o['string_literal'][o['selected_lang']]).map(([k, v]) => [k, allocMixedString(v)])
+            Object.entries(LANG).map(([k, v]) => [k, allocMixedString(globalThis.checkMode ? `code-str.${Object.keys(LANG).indexOf(k)}` : v)])
         );
 
         const file = new File(path, 'w');
@@ -385,8 +308,22 @@ function loadLangEx(iso639_1 = globalThis.language, override = false) {
         file.close();
 
         globalThis.language = o['selected_lang'];
+
+        const i18nPath = `${mod.dir}/assets/dr2c/i18n/${language}.json`;
+        globalThis.i18n = (() => { try { return JSON.parse(File.readAllText(i18nPath)); } catch (e) { warn('i18nHook', e); return null; } })();
+        if (i18n) {
+            i18n.id = [];
+
+            i18n.args = {};
+            const colorNames = ["WHITE", "BLUE", "GREEN", "RED", "PURPLE", "SKULL", "FLICKER", "TOGGLE", "RAINBOW", "FLASHY", "BLINKY", "BOUNCY", "BOUNCY_OFF", "ROLLCLR", "BRIGHTER", "GLOW"];
+            colorNames.forEach((name, index) => {
+                i18n.args[name] = String.fromCharCode(0xE0F0 + index);
+            });
+        }
+
         log('load lang', path, Object.keys(LANG_STR).length, o['selected_lang']);
     } catch (e) {
+        globalThis.i18n = null;
         warn('loadLangEx', e);
     }
 }
@@ -452,9 +389,30 @@ function main() {
     * @param {Module} module 
     */
     function main_body(module) {
+        if (!globalThis.modsDir)
+            globalThis.logFile = new File(mod.dir + '/mod.log', "w");
+
         info('module loaded @ ' + module.base + ' size=' + module.size);
         globalThis.mainModule = module;
         info('mod path:', Process.mainModule.path, globalThis.modsDir, mod.dir);
+
+        const main_build_stamp = new NativeFunction(findSymbol('main_build_stamp'), 'pointer', []);
+        globalThis.build_stamp = main_build_stamp().readCString();
+        switch (globalThis.build_stamp) {
+            case 'OCT-15-2025.15.11':
+                globalThis.load_gfx = globalThis.mainModule.base.add(0xEE0FC);
+                globalThis.btn_music_slider = globalThis.mainModule.base.add(0x100F64);
+                break;
+            case 'MAY-04-2023.09.30':
+                globalThis.load_gfx = globalThis.mainModule.base.add(0xB07D4);
+                globalThis.btn_music_slider = globalThis.mainModule.base.add(0xC4D98);
+                break;
+            default:
+                globalThis.load_gfx = findSymbol('load_gfx');
+                globalThis.btn_music_slider = findSymbol('btn_music_slider');
+                break;
+        }
+        log('main_build_stamp', globalThis.build_stamp);
 
         if (!globalThis.modsDir) {
             globalThis.modsDir = mod.dir + '/mods';
@@ -563,15 +521,6 @@ function hookI18n() {
     const fs_remove = new NativeFunction(findSymbol('fs_remove'), 'int', ['pointer', 'int']);
     const fs_push_string = new NativeFunction(findSymbol('fs_push_string'), 'int', ['pointer', 'pointer']);
 
-    const i18nPath = `${mod.dir}/assets/dr2c/i18n/${language}.json`;
-    let i18n = (() => { try { return JSON.parse(File.readAllText(i18nPath)); } catch (e) { warn('i18nHook', e); return JSON.parse(File.readAllText(`${mod.dir}/assets/dr2c/i18n/en.json`)); } })();
-    i18n.id = [];
-
-    i18n.args = {};
-    const colorNames = ["WHITE", "BLUE", "GREEN", "RED", "PURPLE", "SKULL", "FLICKER", "TOGGLE", "RAINBOW", "FLASHY", "BLINKY", "BOUNCY", "BOUNCY_OFF", "ROLLCLR", "BRIGHTER", "GLOW"];
-    colorNames.forEach((name, index) => {
-        i18n.args[name] = String.fromCharCode(0xE0F0 + index);
-    });
 
     /**
      * @param {string} template - 包含 {key} 占位符的模板字符串
@@ -591,15 +540,22 @@ function hookI18n() {
         },
         onLeave(retval) {
             log('forth_init')
+            File.writeAllText
             fs_register_func(this.a1, L('i18n.fmt'), navFun('i18n.fmt', () => {
-                const id = i18n.id.pop();
-                const str = readByteString(fs_get_string(this.a1, -1));
+                if (!i18n) {
+                    return 0;
+                }
 
-                if (i18n[id]['template']) {
+                // info('fmt', i18n.id.at(-1), i18n.id.length);
+                const id = i18n.id.pop();
+                // const str = readByteString(fs_get_string(this.a1, -1));
+
+                if (i18n[id] && i18n[id]['template']) {
                     const msg = formatMessage(i18n[id]['template'], i18n.args);
                     fs_remove(this.a1, 1);
                     fs_push_string(this.a1, L(msg));
 
+                    // log(JSON.stringify(i18n.args));
                     // if (str !== msg) {
                     //     log('i18n.args', JSON.stringify(i18n.args));
                     //     log('i18n.fmt', id, str, msg);
@@ -609,35 +565,76 @@ function hookI18n() {
             }), 0);
 
             fs_register_func(this.a1, L('i18n.arg!'), navFun('i18n.arg!', () => {
+                if (!i18n) {
+                    fs_remove(this.a1, 1);
+                    return 0;
+                }
+
                 const idx = fs_get_float(this.a1, -1);
-                fs_remove(this.a1, 1);
                 const str = readByteString(fs_get_string(this.a1, -2));
+                fs_remove(this.a1, 1);
                 i18n.args[`${idx}`] = str;
-                // log('i18n.arg.push', i18nArgsIdx, s);
                 return 0;
             }), 0);
 
             fs_register_func(this.a1, L('i18n.id!'), navFun('i18n.id!', () => {
+                if (!i18n) {
+                    fs_remove(this.a1, 1);
+                    return 0;
+                }
+
+
                 const str = readByteString(fs_get_string(this.a1, -1));
                 fs_remove(this.a1, 1);
                 i18n.id.push(str);
+
+                // info('id!', i18n.id.at(-1), i18n.id.length);
+
                 return 0;
             }), 0);
 
             fs_register_func(this.a1, L('i18n.id@'), navFun('i18n.id@', () => {
+                if (!i18n) {
+                    return 0;
+                }
+
+                // info('id@', i18n.id.at(-1), i18n.id.length);
+
                 i18n.id.pop();
                 return 0;
             }), 0);
 
             fs_register_func(this.a1, L('i18n.strlit!'), navFun('i18n.strlit!', () => {
-                const str = readByteString(fs_get_string(this.a1, -2));
+                if (!i18n) {
+                    fs_remove(this.a1, 1);
+                    return 0;
+                }
+
                 const idx = fs_get_float(this.a1, -1);
-                fs_remove(this.a1, 2);
+                fs_remove(this.a1, 1);
                 const id = i18n.id.at(-1);
-                if (globalThis.checkMode)
-                    fs_push_string(this.a1, L(`${id.slice(0, id.indexOf('.') + 7)}`));
-                else
-                    fs_push_string(this.a1, L(`${i18n[id]['strlits'][idx]}`));
+
+                if (i18n[id] && i18n[id]['translated.strlits']) {
+
+                    // const str = readByteString(fs_get_string(this.a1, -2));
+                    fs_remove(this.a1, 1);
+
+                    if (globalThis.checkMode)
+                        fs_push_string(this.a1, L(`${id.slice(0, id.indexOf('.') + 7)}`));
+                    else
+                        fs_push_string(this.a1, L(`${i18n[id]['translated.strlits'][idx]}`));
+                }
+                return 0;
+            }), 0);
+
+            fs_register_func(this.a1, L('i18n.code-strlit!'), navFun('i18n.code-strlit!', () => {
+                if (!i18n) {
+                    return 0;
+                }
+
+                const str = readByteString(fs_get_string(this.a1, -1));
+                fs_remove(this.a1, 1);
+                fs_push_string(this.a1, L(str));
                 return 0;
             }), 0);
         }
@@ -646,7 +643,8 @@ function hookI18n() {
 
     const button_ex = findSymbol('button_ex');
     const plot_text = findSymbol('plot_text');
-    const btn_music_slider = findSymbol('btn_music_slider');
+    /** @type {NativePointer} */
+    const btn_music_slider = globalThis.btn_music_slider;
     const main_stextf = findSymbol('main_stextf');
     const snprintf = findSymbol('snprintf');
     const chara_stat_name = findSymbol('chara_stat_name');
@@ -764,6 +762,14 @@ function hookI18n() {
         }
     });
 
+    /* 
+_vsnprintf	
+_vsprintf	
+_vfprintf	
+_sprintf	
+_printf	
+_fprintf	
+__snprintf	*/
     Interceptor.attach(snprintf, {
         onEnter(args) {
             const str = readByteString(args[2]);
@@ -780,6 +786,63 @@ function hookI18n() {
                     }
                 }
             });
+        }
+    });
+
+    // sprintf(str, format, ...)：可变参数，replace 需重建调用帧，按最多 6 个指针宽可变参数透传。
+    // format 在 args[1]，可变参数从 args[2] 起。浮点(%f/%g)会因按 pointer marshalling 损坏，
+    // UI 翻译只涉及 %s/%d，安全；超过 6 个可变参数会被截断（与 snprintf hook 同等风险范围）。
+    // const sprintf = findSymbol('snprintf');
+    const sprintf = Process.platform === 'windows'
+        ? Process.getModuleByName('msvcrt').getExportByName('sprintf')
+        : Module.getGlobalExportByName('sprintf');
+    const SPRINTF = new NativeFunction(sprintf, 'int',
+        ['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer']);
+    Interceptor.replace(SPRINTF, new NativeCallback(function (str, format, v0, v1, v2, v3, v4, v5) {
+        const va = [v0, v1, v2, v3, v4, v5];
+        const fmt = readByteString(format);
+        if (fmt && LANG_STR[fmt]) {
+            // log(`sprintf ${fmt}`);
+            format = LANG_STR[fmt];
+            const matches = fmt.match(/%./g);
+            if (matches) {
+                matches.forEach((item, index) => {
+                    if (item === '%s' && index < va.length) {
+                        const vastr = va[index].readCString();
+
+                        // if (vastr && vastr.indexOf('Mechanic') !== -1)
+                        //     log(vastr);
+
+                        if (vastr && LANG_STR[vastr]) {
+
+                            // if (vastr.indexOf('Mechanic') !== -1)
+                            //     log(vastr, 'pass');
+
+                            va[index] = L(vastr);
+                        }
+                    }
+                });
+            }
+        }
+        return SPRINTF(str, format, va[0], va[1], va[2], va[3], va[4], va[5]);
+    }, 'int', ['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer']));
+
+    const update_weapon_info_text = findSymbol('update_weapon_info_text');
+    Interceptor.attach(findSymbol('uppercase'), {
+        onEnter(args) {
+            if (this.returnAddress >= update_weapon_info_text && this.returnAddress < update_weapon_info_text.add(0xff)) {
+                const str = readByteString(args[0]);
+                if (!str || !LANG_STR[str]) return;
+                args[0] = LANG_STR[str];
+            }
+        }
+    });
+
+    Interceptor.attach(findSymbol('thing_report_ex'), {
+        onEnter(args) {
+            const str = readByteString(args[1]);
+            if (!str || !LANG_STR[str]) return;
+            args[1] = LANG_STR[str];
         }
     });
 }
@@ -1171,34 +1234,8 @@ function hook() {
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 function hookUtf8() {
-    // ── 适配不同的build_stamp ─────────────────────────────────────────
-    const main_build_stamp = new NativeFunction(findSymbol('main_build_stamp'), 'pointer', []);
-    globalThis.build_stamp = main_build_stamp().readCString();
-
     /** @type {NativePointer} */
-    let load_gfx;
-    /** @type {NativePointer} */
-    let btn_music_slider;
-
-    switch (globalThis.build_stamp) {
-        case 'OCT-15-2025.15.11':
-            load_gfx = globalThis.mainModule.base.add(0xEE0FC);
-            btn_music_slider = globalThis.mainModule.base.add(0x100F64);
-            log('main_build_stamp', globalThis.build_stamp);
-            break;
-
-        case 'MAY-04-2023.09.30':
-            load_gfx = globalThis.mainModule.base.add(0xB07D4);
-            btn_music_slider = globalThis.mainModule.base.add(0xC4D98);
-            log('main_build_stamp', globalThis.build_stamp);
-            break;
-
-        default:
-            load_gfx = findSymbol('load_gfx');
-            btn_music_slider = findSymbol('btn_music_slider');
-            log('main_build_stamp', globalThis.build_stamp);
-            break;
-    }
+    const load_gfx = globalThis.load_gfx;
 
 
     // ── （NativeFunction） ─────────────────────────────────────────
@@ -1229,7 +1266,9 @@ function hookUtf8() {
     const plot_text_ex = new NativeFunction(findSymbol('plot_text_ex'), 'int', ['pointer', 'pointer', 'int', 'pointer']);
     const main_stextf = findSymbol('main_stextf');
     const snprintf = findSymbol('snprintf');
-    const WRAP_TEXT_EX = new NativeFunction(findSymbol('wrap_text_ex'), 'pointer', ['pointer', 'int', 'int']);
+    // a2(字体句柄) 反编译为 __int64，用 'pointer' 原样透传避免高位丢失；a4 为跳行首空白开关
+    const WRAP_TEXT_EX = new NativeFunction(findSymbol('wrap_text_ex'), 'pointer', ['pointer', 'pointer', 'int', 'int']);
+    const GLYPH_W = new NativeFunction(findSymbol('glyph_w'), 'float', ['pointer', 'int']);
     const TURTLE_BASE = findSymbol('turtle');
 
     const _strlen = new NativeFunction(findSymbol('strlen'), 'size_t', ['pointer']);
@@ -1349,15 +1388,14 @@ function hookUtf8() {
                     if (!_utf8Len)
                         SPRITE_BATCH_PLOT(v16, 0, a5);
                     else {
-                        /* TODO: 解决问题, 游戏在显示低分辨率时, 在显示换行字符时纹理会向下移动一个或两个像素 */
                         unifont.add(0).writeU16(unifont_x + 12 * (bmpCodePoint & 0xFF));/* 纹理x轴 */
-                        unifont.add(2).writeU16(unifont_y + 12 * ((bmpCodePoint >> 8) & 0xFF));/* 纹理y轴 */
+                        unifont.add(2).writeU16(unifont_y + 12 * ((bmpCodePoint >> 8) & 0xFF) + 1);/* 纹理y轴 下调1像素对齐游戏字体和解决纹理半像素对齐*/
 
-                        unifont.add(4).writeU16(_utf8Len === 3 ? 12 : 6);/* 宽度 */
+                        unifont.add(4).writeU16(12);/* 宽度 */
                         unifont.add(6).writeU16(12);/* 高度 */
 
                         const scale = TURTLE_BASE.add(0x18).readDouble();
-                        TURTLE_SET_SCALEX(scale * (_utf8Len === 3 ? 8 : 7) / 12);
+                        TURTLE_SET_SCALEX(scale * 8 / 12);
                         TURTLE_SET_SCALEY(scale * 8 / 12);
                         SPRITE_BATCH_PLOT(unifont, 0, a5);
                         TURTLE_SET_SCALE(scale);
@@ -1501,64 +1539,135 @@ function hookUtf8() {
     });
 
     // ── utf8自动换行逻辑 ──────────────────────────────────────
-    const markCharUni = Memory.alloc(10240 * 2);
     const FILL_CHAR = 0xFF;
-    Interceptor.attach(WRAP_TEXT_EX, {
-        onEnter(args) {
-            if (args[0].isNull()) return;
-            this.a1 = args[0];
-            const strPtr = args[0].readPointer();
-            this.a1_str_ptr = strPtr;
+    // ── Replace wrap_text_ex: 直接在 JS 里做 UTF-8 感知换行 ──────────────
+    // 返回一行内容（指向本地静态缓冲区），并把 *a1 推进到下一行起点。
+    // 不再需要 markChar 占位还原：源串保持原始 UTF-8，宽度按整字形测量。
+    const WRAP_BUF_SIZE = 256;            // 与原生 wrap_text_ex_buffer 一致
+    const wrapBuf = Memory.alloc(WRAP_BUF_SIZE);
 
-            this.markLen = markCharNav(strPtr, markCharOut, FULL_WIDTH, HALF_WIDTH, markCharUni, FILL_CHAR);
+    /** ASCII 空白，对应原函数 isspace(_ISspace=0x2000)，但排除 \n \r */
+    const isSpaceNoNL = (b) => b === 0x20 || b === 0x09 || b === 0x0B || b === 0x0C;
+    /**
+     * 返回 p+off 处一个 UTF-8 序列的字节长度。
+     * 游戏文本里可能直接混入非法字节，以下情况一律按单字节(返回 1)处理，
+     * 避免吞掉后续字符或越过结尾 \0：
+     *   - 落单的 continuation 字节 0x80-0xBF；overlong 首字节 0xC0/0xC1；非法首字节 0xF5-0xFF
+     *   - 序列被截断、或后续不是合法 continuation(0x80-0xBF，含提前遇到 \0)
+     * 注意：只读到 \0 为止，readU8 读到 \0 即判失败返回 1，不会越界。
+     */
+    const utf8SeqLen = (p, off) => {
+        const b0 = p.add(off).readU8();
+        if (b0 < 0xC2) return 1;                                  // ASCII / 落单 continuation / overlong 首字节
+        const n = b0 < 0xE0 ? 2 : b0 < 0xF0 ? 3 : b0 < 0xF5 ? 4 : 1;
+        if (n === 1) return 1;                                    // 0xF5-0xFF
+        for (let k = 1; k < n; k++) {
+            const bk = p.add(off + k).readU8();
+            if (bk < 0x80 || bk > 0xBF) return 1;                // 截断 / 非 continuation（含 \0）
+        }
+        return n;
+    };
 
-            this.a1.writePointer(markCharOut);
-        },
+    Interceptor.replace(WRAP_TEXT_EX, new NativeCallback((a1, a2, a3, a4) => {
+        // ── 入口校验（对应反编译开头的三处 null/空判断）──
+        if (a1.isNull()) return NULL;
+        const src0 = a1.readPointer();
+        if (src0.isNull() || src0.readU8() === 0) return NULL;
 
-        onLeave(retval) {
-            if (retval.isNull()) return;
+        // ── 跳过行首空白（仅 a4 == 0；不跳 \n \r）──
+        let start = 0;
+        if (a4 === 0) {
+            while (isSpaceNoNL(src0.add(start).readU8())) start++;
+        }
+        const src = src0.add(start);      // 本行扫描起点（对应原 v4）
 
-            const retLen = _strlen(retval).toNumber();
+        // ── 扫描断行点 ──
+        let i = 0;            // 当前字节偏移
+        let acc = 0;          // 累计宽度（按原函数逐步截断为 int）
+        let breakAt = -1;     // 优选断行字节位置（该位置及之后归下一行）
+        let lineLen, consumed;
 
-            if (retLen !== 0) {
-                const buf = new Uint8Array(retval.readByteArray(retLen) ?? new ArrayBuffer(0));
-                const saved = new Uint8Array(markCharUni.readByteArray(this.markLen * 3) || []);
-                let idx = 0;
+        for (; ;) {
+            const b = src.add(i).readU8();
 
-                for (let i = 0; i < retLen - 1; i++) {
-                    const s1 = buf[i];
-                    const s2 = buf[i + 1];
-                    const s3 = buf[i + 2];
-                    if (s1 === FILL_CHAR && (s2 === FULL_WIDTH || s2 === HALF_WIDTH)) {
-                        const b1 = saved[idx++];
-                        const b2 = saved[idx++];
-                        idx++;
-                        buf.set([b1, b2], i);
-                        i += 1;
-                    } else if (s1 === FILL_CHAR && s2 === FILL_CHAR && (s3 === FULL_WIDTH || s3 === HALF_WIDTH)) {
-                        const b1 = saved[idx++];
-                        const b2 = saved[idx++];
-                        const b3 = saved[idx++];
-
-                        buf.set([b1, b2, b3], i);
-                        i += 2;
-                    }
-                }
-
-                retval.writeByteArray(buf.buffer);
+            if (b === 0) {                    // 字符串结束
+                lineLen = i; consumed = i; break;
+            }
+            if (b === 0x0A || b === 0x0D) {   // 硬换行 \n / \r（消费掉换行符）
+                lineLen = i; consumed = i + 1;
+                // \r\n 视为单个换行，避免多出一个空行
+                // log('硬换行 \n / \r（消费掉换行符）');
+                if (b === 0x0D && src.add(i + 1).readU8() === 0x0A) consumed = i + 2;
+                break;
             }
 
-            const move_len = this.a1.readPointer().sub(markCharOut);
-            this.a1.writePointer(this.a1_str_ptr.add(move_len));
-        }
-    });
+            const seq = utf8SeqLen(src, i);   // 非法字节会被判为 seq=1，按单字节渲染/推进
 
+            // 记录断行机会：空白处，或宽字符之前（CJK 可在字间换行；非法单字节不算宽字符）
+            if (isSpaceNoNL(b)) breakAt = i;          // 空白留到下一行被 trim
+            else if (seq >= 2 && i > 0) breakAt = i;  // 合法多字节字符前可断
+
+            // 测量本字符宽度：单字节用本字节，多字节按全/半角字形测量
+            const raw = seq === 1 ? b : (seq === 2 ? HALF_WIDTH : FULL_WIDTH);
+            const measure = (raw << 24) >> 24;        // (char) 符号扩展，与原版 glyph_w(a2,(char)v8) 一致
+            acc = Math.trunc(acc + GLYPH_W(a2, measure));
+
+            // 超出最大宽度，或放不下整个字符就会撑爆缓冲区 → 断行
+            if (acc >= a3 || i + seq > WRAP_BUF_SIZE - 1) {
+                if (breakAt > 0) { lineLen = breakAt; consumed = breakAt; }       // 词/字间断行
+                else if (i > 0) { lineLen = i; consumed = i; }                    // 强制字符级断行
+                else { lineLen = seq; consumed = seq; }                           // 首字符超宽：至少输出 1 个，防死循环
+                break;
+            }
+
+            i += seq;
+        }
+
+        // ── 写入静态缓冲区并截断 ──
+        if (lineLen > 0) Memory.copy(wrapBuf, src, lineLen);
+        wrapBuf.add(lineLen).writeU8(0);
+
+        // ── 推进调用方游标（consumed 已含硬换行符）──
+        a1.writePointer(src.add(consumed));
+
+        return wrapBuf;
+    }, 'pointer', ['pointer', 'pointer', 'int', 'int']));
+
+    // ── utf8字符测宽逻辑 ──────────────────────────────────────
+
+    /**
+     * 把 input(UTF-8) 里的多字节字符替换成等长占位字节写入 output，供原生 text_w 测宽：
+     *   2 字节字符   → [FILL_CHAR, HALF_WIDTH]
+     *   3/4 字节字符 → [FILL_CHAR ×(n-1), FULL_WIDTH]
+     * FILL_CHAR(0xFF) 是零宽字形，末尾的宽度标记字节贡献半/全角宽度，
+     * 因此每个字符恰好计一个半/全角字形——与 wrap_text_ex 的宽度口径完全一致。
+     * ASCII 和非法字节(seq=1)原样拷贝。text_w 只返回宽度，不需要 markCharUni 还原。
+     * 输出字节数与输入相同，复用 markCharOut(10240) 不会膨胀。
+     * @param {NativePointer} input
+     * @param {NativePointer} output
+     */
+    function fillWideChars(input, output) {
+        let i = 0, o = 0;
+        for (; o < 10240 - 4;) {
+            const b = input.add(i).readU8();
+            if (b === 0) break;
+            const seq = utf8SeqLen(input, i);
+            if (seq === 1) {
+                output.add(o++).writeU8(b);            // ASCII / 非法字节原样
+            } else {
+                for (let k = 0; k < seq - 1; k++) output.add(o++).writeU8(FILL_CHAR);
+                output.add(o++).writeU8(seq === 2 ? HALF_WIDTH : FULL_WIDTH);
+            }
+            i += seq;
+        }
+        output.add(o).writeU8(0);
+    }
 
     Interceptor.attach(text_w, {
         onEnter(args) {
             if (args[0].isNull()) return;
 
-            markCharNav(args[0], markCharOut, FULL_WIDTH, HALF_WIDTH, markCharUni, FILL_CHAR);
+            fillWideChars(args[0], markCharOut);
 
             args[0] = markCharOut;
         }
@@ -1740,10 +1849,7 @@ const strList = {};
 /** @param {string} str @returns {NativePointer} */
 function L(str) {
     if (LANG_STR[str]) {
-        if (globalThis.checkMode)
-            str = `code-str.${Object.keys(LANG_STR).indexOf(str)}`
-        else
-            return LANG_STR[str];
+        return LANG_STR[str];
     }
     if (!strList[str]) {
         const str_p = allocMixedString(str);

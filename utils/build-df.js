@@ -40,6 +40,16 @@ function simhash64(text) {
     return fingerprint; // BigInt
 }
 
+/**
+ * 基于 MD5 的 64 位指纹。不同文本几乎不碰撞(非局部敏感)。
+ * @param {string} text
+ * @returns {bigint}
+ */
+function md5hash64(text) {
+    const hex = crypto.createHash('md5').update(text, 'utf8').digest('hex'); // 32 hex = 128 bit
+    return BigInt('0x' + hex.slice(0, 16)); // 取高 64 位
+}
+
 
 
 const program = new Command();
@@ -84,7 +94,7 @@ function toTemplate(src, type, argInsert = true) {
     const i18nTokens = [...tokens];
     let i18nTokensOffset = 0;
 
-    const id = type + '.' + simhash64(tokens.join(' '));
+    const id = type + '.' + md5hash64(tokens.join(' '));
 
     for (let index = 0; index < tokens.length; index++) {
 
@@ -536,7 +546,15 @@ dfFiles.forEach(file => {
                 i18nTokenInsert:
                     /** @param {string} id  @param {string[]} tokens  @param {string} type */
                     (id, tokens, type) => {
-                        tokenId(tokens, 2, -1, id);
+                        // tokenId(tokens, 2, -1, id);
+
+                        tokens.splice(2, 0, `"${id}"`);
+                        tokens.splice(2 + 1, 0, `i18n.id!`);
+                        for (let i = tokens.length - 1; i >= 0; i--) {
+                            if (tokens[i] === ";" || tokens[i] === 'then;') {
+                                tokens.splice(i, 0, "i18n.id@");
+                            }
+                        }
                     }
             },
         ]
@@ -550,11 +568,21 @@ dfFiles.forEach(file => {
 
                     mat.i18nTokenInsert(t.id, t.i18nTokens, mat.type)
 
-                    !mapTemp[mat.type] ? mapTemp[mat.type] = {} : '';
-                    mapTemp[mat.type][t.id]
-                        = { orig: item, i18n: t.i18nTokens.join(' '), template: t.template, strlits: t.strlits };
+                    if (!mapTemp[mat.type]) mapTemp[mat.type] = {};
+
+                    if (mapTemp[mat.type][t.id]) {
+                        mapTemp[mat.type][t.id].orig = [...new Set([...mapTemp[mat.type][t.id].orig, item])];
+                    } else {
+                        mapTemp[mat.type][t.id] = {
+                            orig: [item],
+                            tokens: t.tokens.join(' '),
+                            i18n: t.i18nTokens.join(' '),
+                            template: t.template,
+                            strlits: t.strlits
+                        };
+                    }
                 } catch (e) {
-                    map.error.push({ file: file, error: String(e) + e.stack })
+                    map.error.push({ file: file, error: String(e) + e.stack });
                 }
             }
         }
@@ -580,6 +608,17 @@ dfFiles.forEach(file => {
 
     if (totalChanges > 0) {
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        const rules = [
+            ['chara .trait@ +text', 'chara .trait@ i18n.code-strlit! +text'],
+            ['chara .perk@ +text', 'chara .perk@ i18n.code-strlit! +text'],
+            ['<- name $upper pbold', '<- name i18n.code-strlit! $upper pbold'],
+            ['<- level unlockupgrade? 0 i18n.arg! .. <- name pbold', '<- level unlockupgrade? 0 i18n.arg! .. <- name i18n.code-strlit! pbold'],
+            ['<- chara .weapona@ weaponid$ +text', '<- chara .weapona@ weaponid$ i18n.code-strlit! +text'],
+            ['<- chara .weaponb@ weaponid$ +text', '<- chara .weaponb@ weaponid$ i18n.code-strlit! +text'],
+            ['<- chara .weaponc@ weaponid$ +text', '<- chara .weaponc@ weaponid$ i18n.code-strlit! +text'],
+        ];
+
+        rules.forEach(([re, to]) => currentContent = currentContent.replace(re, to));
         fs.writeFileSync(targetPath, currentContent);
     }
 
@@ -601,7 +640,7 @@ for (const [key, value] of Object.entries(map)) {
     if (Object.keys(value).length === 0) continue;
 
     for (const [key2, value2] of Object.entries(value)) {
-        i18n[key2] = { orig: value2.orig, strlits: value2.strlits };
+        i18n[key2] = { tokens: value2.tokens, strlits: value2.strlits };
     }
 }
 fs.writeFileSync('assets/dr2c/i18n/en.json', JSON.stringify(i18n, null, 4));
@@ -609,21 +648,21 @@ fs.writeFileSync('assets/dr2c/i18n/en.json', JSON.stringify(i18n, null, 4));
 /**
  * 在内容字符串上执行替换
  * @param {string} content - 源内容
- * @param {Object<string, {orig: string, i18n: string}>} replacements
+ * @param {Object<string, {orig: string[], i18n: string}>} replacements
  * @returns {{modified: boolean, changes: number, content: string}}
  */
 function replaceInContent(content, replacements) {
     let modifiedContent = content;
     let changes = 0;
-
     for (const { orig, i18n } of Object.values(replacements)) {
-        const parts = modifiedContent.split(orig);
-        if (parts.length > 1) {
-            changes += parts.length - 1;
-            modifiedContent = parts.join(i18n);
+        for (const o of orig) {
+            if (!o) continue;
+            const parts = modifiedContent.split(o);
+            if (parts.length > 1) {
+                changes += parts.length - 1;
+                modifiedContent = parts.join(i18n);
+            }
         }
     }
-
-
     return { modified: changes > 0, changes, content: modifiedContent };
 }
