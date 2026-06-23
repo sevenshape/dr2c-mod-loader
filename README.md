@@ -84,4 +84,10 @@ Unofficial, fan-made tool — not affiliated with or endorsed by Rocketcat Games
 
 ## License
 
-[ISC License](./LICENSE)
+The mod-loader source code is licensed under the [ISC License](./LICENSE).
+
+`assets/font_ucs2_12x12.png` is a bitmap derived from
+[Fusion Pixel Font](https://github.com/TakWolf/fusion-pixel-font) by TakWolf,
+licensed under the SIL Open Font License 1.1. The full license text is
+included at
+[assets/font_ucs2_12x12.png.LICENSE](./assets/font_ucs2_12x12.png.LICENSE).
