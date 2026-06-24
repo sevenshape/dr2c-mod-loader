@@ -9,72 +9,6 @@ const execFileAsync = promisify(execFile);
 
 const frida = require('frida');
 
-async function openZipFile(title = 'Install Mod From File') {
-    const platform = process.platform;
-
-    try {
-        if (platform === 'win32') {
-            const escTitle = title.replace(/'/g, "''");
-            const ps = `
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        Add-Type -AssemblyName System.Windows.Forms
-
-        # 创建一个隐藏的 topmost 窗口作为 owner
-        $owner = New-Object System.Windows.Forms.Form
-        $owner.TopMost = $true
-        $owner.ShowInTaskbar = $false
-        $owner.WindowState = 'Minimized'
-        $owner.Opacity = 0
-        $owner.Show()
-        $owner.Hide()
-        # 强制激活
-        [System.Windows.Forms.Application]::DoEvents()
-        $owner.Activate()
-
-        $f = New-Object System.Windows.Forms.OpenFileDialog
-        $f.Title = '${escTitle}'
-        $f.Filter = 'ZIP files (*.zip)|*.zip'
-        $f.Multiselect = $false
-
-        $result = $f.ShowDialog($owner)
-        $owner.Dispose()
-
-        if ($result -eq 'OK') { Write-Output $f.FileName }
-    `;
-            const { stdout } = await execFileAsync(
-                'powershell',
-                ['-NoProfile', '-Sta', '-Command', ps],
-                { encoding: 'utf8' }
-            );
-            return stdout.trim() || null;
-        }
-
-        if (platform === 'darwin') {
-            // macOS: osascript + choose file
-            const escTitle = title.replace(/"/g, '\\"');
-            const script = `try
-  set f to choose file with prompt "${escTitle}" of type {"zip", "public.zip-archive"}
-  return POSIX path of f
-on error
-  return ""
-end try`;
-            const { stdout } = await execFileAsync('osascript', ['-e', script]);
-            return stdout.trim() || null;
-        }
-
-        // Linux: zenity(用户需预装)
-        const { stdout } = await execFileAsync('zenity', [
-            '--file-selection',
-            `--title=${title}`,
-            '--file-filter=ZIP files | *.zip',
-        ]);
-        return stdout.trim() || null;
-    } catch (e) {
-        // 用户取消 / zenity 没装 / 用户没选文件 → 一律当作 null
-        return null;
-    }
-}
-
 async function openGameExeFile(title = 'Select Game File') {
     const platform = process.platform;
 
@@ -146,35 +80,7 @@ async function findGameExe() {
     return null;
 }
 
-let script; // 全局 script,供 onMessage 里 post 回消息
-
-async function onMessage(message, data) {
-    if (message.type === 'send') {
-        const payload = message.payload;
-
-        if (payload.type === 'mkdir') {
-            fs.mkdirSync(payload.data.path, { recursive: true });
-            script.post({
-                type: 'mkdir',
-                success: true,
-            });
-        } else if (payload.type === 'filedialog') {
-            const result = await openZipFile('Install Mod From File');
-
-            script.post({
-                type: 'filedialog',
-                success: true,
-                result: result,   // 选中:字符串路径;取消/失败:null
-            });
-        } else {
-            console.log('[agent]', payload);
-        }
-    } else if (message.type === 'error') {
-        console.log('[error]', message.stack);
-    } else {
-        console.log('[msg]', message);
-    }
-}
+let script;
 
 async function main() {
     const program = new Command();
@@ -252,7 +158,6 @@ async function main() {
     script = await session.createScript(agentSource, {
         name: path.basename(args.script, '.js'),
     });
-    script.message.connect(onMessage);
     await script.load();
     console.log('[*] agent 已注入');
     console.log('[*] agent 初始化完成');

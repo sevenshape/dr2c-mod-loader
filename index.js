@@ -402,14 +402,17 @@ function main() {
             case 'OCT-15-2025.15.11':
                 globalThis.load_gfx = globalThis.mainModule.base.add(0xEE0FC);
                 globalThis.btn_music_slider = globalThis.mainModule.base.add(0x100F64);
+                globalThis.update_weapon_info_text = globalThis.mainModule.base.add(0x107428);
                 break;
             case 'MAY-04-2023.09.30':
                 globalThis.load_gfx = globalThis.mainModule.base.add(0xB07D4);
                 globalThis.btn_music_slider = globalThis.mainModule.base.add(0xC4D98);
+                globalThis.update_weapon_info_text = globalThis.mainModule.base.add(0xCACB4);
                 break;
             default:
                 globalThis.load_gfx = findSymbol('load_gfx');
                 globalThis.btn_music_slider = findSymbol('btn_music_slider');
+                globalThis.update_weapon_info_text = findSymbol('btn_music_slider');
                 break;
         }
         log('main_build_stamp', globalThis.build_stamp);
@@ -827,7 +830,7 @@ __snprintf	*/
         return SPRINTF(str, format, va[0], va[1], va[2], va[3], va[4], va[5]);
     }, 'int', ['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer']));
 
-    const update_weapon_info_text = findSymbol('update_weapon_info_text');
+    const update_weapon_info_text = globalThis.update_weapon_info_text;
     Interceptor.attach(findSymbol('uppercase'), {
         onEnter(args) {
             if (this.returnAddress >= update_weapon_info_text && this.returnAddress < update_weapon_info_text.add(0xff)) {
@@ -1197,7 +1200,7 @@ function hook() {
             const cyoa_yesno = new NativeFunction(findSymbol('cyoa_yesno'), 'int', ['pointer', 'pointer', 'pointer', 'pointer']);
             const main_common_page_setup = new NativeFunction(findSymbol('main_common_page_setup'), 'int', ['pointer', 'int']);
 
-            main_common_page_setup(L('CHANGE LANGUAGE'), 0);
+            main_common_page_setup(L('Change Language'), 0);
             button_set_layout(1.0, 1.0);
             main_tabscreen_blank_tab_layout();
             button_set_layout(4.0, 6.0);
@@ -1208,10 +1211,10 @@ function hook() {
             const langs = Object.keys(json['string_literal']);
 
             langs.forEach((lang, i, array) => {
-                const btn = button_ex((i % 4), Math.floor(i / 4), i, L(lang), main_btn_data_func);
+                const btn = button_ex((i % 4), Math.floor(i / 4), i, L(lang + '.Language.Name'), main_btn_data_func);
                 setOnClickListener(btn, () => {
 
-                    cyoa_yesno(L('Change Language to ' + lang + '?'), L('YES'), L('NO'),
+                    cyoa_yesno(L(LANG['Change Language to '] + LANG[lang + '.Language.Name'] + '?'), L('YES'), L('NO'),
                         navFun('', (ptr) => {
                             if (ptr instanceof NativePointer) {
                                 const yes = ptr.add(80).readInt();
@@ -1221,6 +1224,14 @@ function hook() {
                             }
                         }, 'void', ['pointer'])
                     );
+                    cyoa_add_choice();
+                    cyoa_set_choice_func(navFun('desc_delete_confirm_delete_' + mod.name,
+                        () => {
+                            cyoa_just_ok(L(lang + '.Language.Contributors.List'))
+                            return 1;
+                        }
+                    ));
+                    cyoa_set_choice_text(L("Contributors List"));
                 });
             });
             return 0;

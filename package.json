@@ -1,6 +1,6 @@
 {
   "name": "dr2c-mod-loader",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Load mod to dr2c.",
   "license": "ISC",
   "author": "sevenshape",
@@ -23,13 +23,14 @@
     "tag:dev": "node -e \"const ts = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(2, 14);require('child_process').execSync('cross-var git tag %npm_package_version%-dev.' + ts + ' -m \\\"dev build\\\"', {stdio: 'inherit'})\"",
     "dev:apk": "npm run build && npx cap sync android && npm run tag:dev && npm run install:apk && adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed",
     "dev:apk:reload": "adb shell am force-stop com.noodlecake.drtc && adb shell monkey -p com.noodlecake.drtc 1 && adb logcat -s Xposed",
-    "pck": "npm run build && node -e \"const p=process;const out='./build/dr2c-mod-loader-'+p.platform+'-'+p.arch;require('child_process').execSync('npx deno compile --include ./dist --allow-all --output '+out+' utils/run.js',{stdio:'inherit'})\"",
+    "pck": "npm run build && node -e \"const p=process;const out=''+p.platform+'-'+p.arch;require('child_process').execSync('cross-var npx deno compile --no-terminal --include ./dist --allow-all --output ./build/%npm_package_name%-%npm_package_version%-'+out+' utils/run.js',{stdio:'inherit'})\"",
     "tag:prod": "cross-var git tag -f $npm_package_version",
     "copy-apk": "node -e \"require('fs').copyFileSync('./android/app/build/outputs/apk/release/app-release.apk', './build/modloader.apk')\"",
     "build:apk": "npm run tag:prod && npm run build && npx cap sync android && cd android && gradlew assembleRelease && npm run copy-apk",
     "diff": "git diff > changes.patch",
     "build:df": "node utils/build-df.js",
-    "build:df:update": "npm run build:df && npm run dev:fast:update:assets"
+    "build:df:update": "npm run build:df && npm run dev:fast:update:assets",
+    "build:df:copy": "node utils/build-df.js --copy"
   },
   "devDependencies": {
     "@capacitor/android": "^8.3.4",

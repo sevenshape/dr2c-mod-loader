@@ -1,9 +1,17 @@
 {
+    "selected_lang": "zh",
     "string_literal": {
         "en": {
             "Mods": "Mods",
             "Install Mod From File": "Install Mod From File",
             "Language": "Language",
+            "Contributors List": "Contributors List",
+            "Change Language": "Change Language",
+            "Change Language to ": "Change Language to ",
+            "en.Language.Name": "English",
+            "en.Language.Contributors.List": "",
+            "zh.Language.Name": "简体中文",
+            "zh.Language.Contributors.List": "程序: 九筒     群主/翻译：昏暗     校对/翻译：RickJoel\r\n\t主要翻译者：Amaz  达达尼昂  phage酱  花草忍  草方块  水*獭子\r\n\t　　　　　　Madeline  沼泽地里的鱼  Cirno  Natsuki  等等一众群友!",
             "morale": "morale",
             "composure": "composure",
             "charm": "charm",
@@ -437,6 +445,13 @@
             "Mods": "模组",
             "Install Mod From File": "安装本地模组",
             "Language": "语言",
+            "Contributors List": "贡献者名单",
+            "Change Language": "修改语言",
+            "Change Language to ": "修改语言至",
+            "en.Language.Name": "English",
+            "en.Language.Contributors.List": "",
+            "zh.Language.Name": "简体中文",
+            "zh.Language.Contributors.List": "程序: 九筒     群主/翻译：昏暗     校对/翻译：RickJoel\r\n\t主要翻译者：Amaz  达达尼昂  phage酱  花草忍  草方块  水*獭子\r\n\t　　　　　　Madeline  沼泽地里的鱼  Cirno  Natsuki  等等一众群友!",
             "morale": "士气",
             "composure": "冷静",
             "charm": "魅力",
@@ -866,6 +881,5 @@
             "Butter knife": "黄油刀",
             "Fork": "餐叉"
         }
-    },
-    "selected_lang": "zh"
+    }
 }

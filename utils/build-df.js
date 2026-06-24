@@ -4,41 +4,45 @@ const fs = require('fs');
 const path = require('path');
 const { Command } = require('commander');
 const crypto = require('crypto');
+const os = require('os');
+const { execFileSync } = require('child_process');
 
+function findGameAssetsDir() {
+    if (process.platform === 'win32') {
+        const stdout = execFileSync('powershell.exe', [
+            '-NoProfile',
+            '-Command',
+            '(Get-ItemProperty -Path "HKLM:\\SOFTWARE\\WOW6432Node\\Valve\\Steam" -Name "InstallPath" -ErrorAction SilentlyContinue).InstallPath'
+        ], { encoding: 'utf8' });
 
-/**
- * @param {string} text 
- * @returns {bigint} 
- */
-function simhash64(text) {
-    // 1. 分词（中文建议用 nodejieba，英文按空格切）
-    const tokens = text.split(/\s+/).filter(Boolean);
+        const steamPath = stdout.trim();
 
-    // 2. 64 维向量
-    const vector = new Array(64).fill(0);
-
-    for (const token of tokens) {
-        // 用 MD5 取前 64 位作为 token 的哈希
-        const hash = crypto.createHash('md5').update(token).digest();
-        const bigHash = BigInt('0x' + hash.toString('hex').slice(0, 16));
-
-        // 3. 按位累加/累减
-        for (let i = 0; i < 64; i++) {
-            const bit = (bigHash >> BigInt(i)) & 1n;
-            vector[i] += bit === 1n ? 1 : -1;
+        if (!steamPath) {
+            return '';
         }
+        if (!fs.existsSync(path.join(steamPath, 'steamapps', 'common', 'DeathRoadToCanada'))) {
+            return '';
+        }
+        return path.join(steamPath, 'steamapps', 'common', 'DeathRoadToCanada');
     }
 
-    // 4. 生成最终指纹
-    let fingerprint = 0n;
-    for (let i = 0; i < 64; i++) {
-        if (vector[i] > 0) {
-            fingerprint |= (1n << BigInt(i));
-        }
+    if (process.platform === 'linux') {
+        return path.join(
+            os.homedir(),
+            '.steam/steam/steamapps/common/DeathRoadToCanada'
+        );
     }
 
-    return fingerprint; // BigInt
+    if (process.platform === 'darwin') {
+        return path.join(
+            os.homedir(),
+            'Library/Application Support/Steam/steamapps/common/DeathRoadToCanada/DR2C.app/Contents'
+        );
+    }
+
+    return null;
 }
+const assetsDir = findGameAssetsDir();
 
 /**
  * 基于 MD5 的 64 位指纹。不同文本几乎不碰撞(非局部敏感)。
@@ -53,14 +57,16 @@ function md5hash64(text) {
 
 
 const program = new Command();
-
 program
     .description('')
+    .option('--copy')
     .parse(process.argv);
 
 const args = program.opts();
-
-const deathforth = 'assets/dr2c/deathforth_orig';
+if (args.copy) {
+    fs.cpSync(assetsDir + '/deathforth', 'assets/dr2c/deathforth', { recursive: true });
+    fs.cpSync(assetsDir + '/gfx', 'assets/dr2c/gfx', { recursive: true });
+}
 
 
 /**
@@ -254,7 +260,7 @@ require('util').inspect.defaultOptions.compact = Infinity;
 // ---------- 6. 主流程 ----------
 
 
-const files = fs.readdirSync(deathforth, { recursive: true, withFileTypes: true });
+const files = fs.readdirSync(assetsDir + '/deathforth', { recursive: true, withFileTypes: true });
 const allFiles = files
     .filter(file => file.isFile())
     .map(file => path.join(file.parentPath, file.name));  // 使用 parentPath
@@ -590,8 +596,18 @@ dfFiles.forEach(file => {
         console.error(e);
     }
 
+    function relocate(fullPath) {
+        const parts = fullPath.split(path.sep);
+        const idx = parts.indexOf('deathforth');
+        if (idx === -1) return fullPath;
+        // deathforth 之后的部分
+        const tail = parts.slice(idx + 1);
+        return path.join('assets', 'dr2c', 'deathforth', ...tail);
+    }
+
+
     // 在循环外读一次内容，循环内累积所有替换
-    const targetPath = file.replace('deathforth_orig', 'deathforth');
+    const targetPath = relocate(file);
     let currentContent = fs.readFileSync(file, 'utf-8');
     let totalChanges = 0;
 
