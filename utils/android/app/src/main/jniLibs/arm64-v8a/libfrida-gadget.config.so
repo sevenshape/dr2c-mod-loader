@@ -1,6 +1,6 @@
 {
   "interaction": {
     "type": "script",
-    "path": "/storage/emulated/0/Android/data/com.noodlecake.drtc/files/mods/dr2c-mod-loader/main.js"
+    "path": "libfrida-gadget.script.so"
   }
 }

@@ -23,8 +23,10 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) {
-        if (!lpparam.packageName.equals("com.noodlecake.drtc"))
-            return;
+        // In NPatch integrated mode this module is embedded into one host APK,
+        // so the callback is already scoped to that host. Do not reject a
+        // correctly generated coexisting build merely because its application
+        // id is no longer com.noodlecake.drtc.
         log("load " + lpparam.packageName);
 
         XModuleResources modRes = XModuleResources.createInstance(MODULE_PATH, null);
@@ -40,16 +42,31 @@ public class Xposed implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     protected void afterHookedMethod(MethodHookParam param) {
 
                         Context ctx = (Context) param.thisObject;
-                        File modDir = new File(ctx.getExternalFilesDir(""), "mods/dr2c-mod-loader");
+                        File modDir = ctx.getExternalFilesDir("");
+                        if (modDir == null) {
+                            error("✗ External files directory is unavailable",
+                                    new IOException("getExternalFilesDir returned null"));
+                            return;
+                        }
                         File scriptFile = new File(modDir, "main.js");
+                        File moduleStampFile = new File(modDir, ".dr2c-loader-module");
                         log("modDir: " + modDir.getAbsolutePath());
                         log("scriptFile: " + scriptFile.getAbsolutePath());
 
                         try {
-                            if (scriptFile.exists()) {
-                                log("skip execution to copyAssets");
-                            } else {
+                            File moduleFile = new File(MODULE_PATH);
+                            String moduleStamp = MODULE_PATH + ":" + moduleFile.length()
+                                    + ":" + moduleFile.lastModified();
+                            String installedStamp = moduleStampFile.exists()
+                                    ? readText(moduleStampFile) : "";
+                            if (!moduleStamp.equals(installedStamp)) {
+                                // Refresh the APK-owned bootstrap and assets
+                                // once per APK update. Installed mods live in
+                                // mods/ and are never touched.
                                 Xposed.copyAssets(xam, "public", modDir);
+                                writeText(moduleStampFile, moduleStamp);
+                            } else {
+                                log("loader assets already match embedded module");
                             }
                         } catch (Exception e) {
                             error("fail to copyAssets", e);
