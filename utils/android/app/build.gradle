@@ -34,7 +34,7 @@ android {
     // 在每个变体的预构建阶段执行
     applicationVariants.all { variant ->
         variant.preBuildProvider.configure {
-            dependsOn 'downloadFridaGadget'
+            dependsOn 'downloadFridaGadget', 'syncFridaGadgetScript'
         }
     }
 }
@@ -127,4 +127,13 @@ tasks.register('downloadFridaGadget') {
 
         println "Successfully extracted and saved to ${gadgetTargetFile}"
     }
+}
+
+// Gadget resolves relative script paths beside its own shared library. Bundle
+// the compiled loader there so cloned application ids do not require a
+// hard-coded /storage/emulated/0/Android/data/<package>/ path.
+tasks.register('syncFridaGadgetScript', Copy) {
+    from rootProject.file('../dist/main.js')
+    into file(jniLibsDir)
+    rename { 'libfrida-gadget.script.so' }
 }

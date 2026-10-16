@@ -4,3 +4,32 @@ build/
 dist/
 node_modules/
 note/
+assets/dr2c/
+.claude/
+
+# Local metadata, signing material and device output are not source releases.
+.DS_Store
+._*
+*.log
+*.ipa
+*.apk
+*.jks
+*.keystore
+*.bks
+*.mobileprovision
+
+# Generated iOS bundle inputs (recreated by build:ios-main).
+/ios/autonomous-index.generated.js
+/ios/vendor/
+
+# Local-only validation/diagnostic tools; retain on disk, do not publish.
+/utils/test-*.cjs
+/utils/map-ios-functions.py
+/utils/ios-function-map.json
+/utils/build-ios-empty-gadget.js
+/ios/autonomous-bootstrap.js
+/ios/autonomous-dependency-probe.js
+/ios/autonomous-eval-bootstrap.js
+/ios/diagnostic-main.js
+/ios/empty-gadget.js
+/ios/FridaGadget.empty.config

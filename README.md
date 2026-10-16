@@ -6,6 +6,29 @@ It injects your mod into the game at runtime — no need to modify the original 
 
 ---
 
+## PC / iOS / Android 汉化扩展（2026-10）
+
+本分支包含三端运行实现及必要构建工具。中文更新内容见
+[CHANGELOG.md](./CHANGELOG.md#未发布---2026-10-16)。测试、诊断入口和生成产物不纳入源码提交。
+
+Windows 的资源模组应声明 `"dr2cRuntime": "resources-only"`，由原版补丁加载器处理；
+该声明不让 Android 跳过模组自身脚本。iOS 使用宿主加载器，不执行模组包内的 PC/Android JS。
+Windows 的 padded 字体来自原版补丁，不能随所选资源模组切换路径。
+
+正式 iOS 构建使用 `npm run build:ios-unified-release`；它需要自备合法的干净砸壳游戏包、
+匹配的 Gadget、gum-graft 和 Xcode iOS SDK。Android 共存构建使用
+`utils/build-android-coexist-set.js`，需另行准备该脚本列出的 APK、Java 工具及本地签名材料。
+这些外部输入不包含在仓库内；具体版本偏移和 ABI 必须与实现相匹配。
+
+通用 `npm run build` 会重新生成 `dist/main.js`，不要用它覆盖 PC 补丁中已有的旧版
+约 1.8 MB 启动器；该 PC 部署仍由旧启动器读取更新后的根加载器 `index.js`。
+构建命令不是跨版本通用的游戏安装器。
+
+Windows 的 `font_ucs2_12x12_padded.png` 由同目录原字体加边缘扩展生成，
+沿用 [原字体许可证](./assets/font_ucs2_12x12.png.LICENSE)。
+
+---
+
 ## Install & Run
 
 Download the latest release from the [Releases page](https://github.com/sevenshape/dr2c-mod-loader/releases).
@@ -84,4 +107,10 @@ Unofficial, fan-made tool — not affiliated with or endorsed by Rocketcat Games
 
 ## License
 
-[ISC License](./LICENSE)
+The mod-loader source code is licensed under the [ISC License](./LICENSE).
+
+`assets/font_ucs2_12x12.png` is a bitmap derived from
+[Fusion Pixel Font](https://github.com/TakWolf/fusion-pixel-font) by TakWolf,
+licensed under the SIL Open Font License 1.1. The full license text is
+included at
+[assets/font_ucs2_12x12.png.LICENSE](./assets/font_ucs2_12x12.png.LICENSE).
